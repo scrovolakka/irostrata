@@ -6,6 +6,7 @@ import { calculateWorkSize } from "../lib/render-size.mjs";
 import { normalizePresetState } from "../lib/preset-state.mjs";
 import { createRandomRecipe } from "../lib/random-recipe";
 import { createZip, setJpegDpi, setPngDpi } from "./export-utils";
+import { htmlLang, initialLocale, localeOptions, localeStorageKey, translate, type Locale, type MessageKey } from "./i18n";
 
 type InkId = "black" | "blue" | "fluorescentPink" | "green" | "orange" | "red" | "brightRed" | "yellow" | "burgundy" | "teal" | "purple" | "brown" | "slate" | "mediumBlue" | "violet" | "cornflower" | "sunflower";
 
@@ -80,6 +81,8 @@ type PresetState = {
   frameRatio: FrameRatio;
   frameFit: "cover" | "contain";
 };
+
+type NoticeState = { key: MessageKey; variables?: Record<string, string | number> };
 
 const presetStorageKey = "irostrata.saved-presets.v1";
 const legacyPresetStorageKey = "inkloom.saved-presets.v1";
@@ -176,11 +179,13 @@ const angleLabels: Record<AngleMode, string> = {
   rosette: "Rosette",
 };
 
-const angleDescription: Record<AngleMode, string> = {
-  dot: "全インクを同じ格子へ重ねる",
-  offset: "版ごとに微妙な角度差をつける",
-  rosette: "複数角度でロゼットをつくる",
+const angleDescriptionKeys: Record<AngleMode, MessageKey> = {
+  dot: "tone.angle.dot",
+  offset: "tone.angle.offset",
+  rosette: "tone.angle.rosette",
 };
+
+const builtInPresetIds = new Set(builtInPresets.map((preset) => preset.id));
 
 const offsetAngles = [0, 7.5, -7.5, 15, -15, 22.5];
 const rosetteAngles = [15, 75, 0, 45, 30, 60];
@@ -257,13 +262,15 @@ export default function Home() {
   const processedPreviewRef = useRef<ImageData | null>(null);
   const originalHeldRef = useRef(false);
   const previewPipelineCacheRef = useRef<{ separationKey: string; screenKey: string; printKey: string; registrationKey: string; result: ReturnType<typeof renderPipeline> } | null>(null);
+  const localeMountedRef = useRef(false);
   const nextPlateIdRef = useRef(3);
   const [plates, setPlates] = useState<InkPlate[]>(initialPlates);
   const [activePlateId, setActivePlateId] = useState(1);
   const [settings, setSettings] = useState<Settings>(defaultSettings);
-  const [imageState, setImageState] = useState<{ name: string; ready: boolean; revision: number }>({ name: "サンプルポスター", ready: true, revision: 0 });
+  const [locale, setLocale] = useState<Locale>("en");
+  const [imageState, setImageState] = useState<{ name: string; ready: boolean; revision: number }>({ name: "", ready: true, revision: 0 });
   const [isDragging, setIsDragging] = useState(false);
-  const [notice, setNotice] = useState("写真を追加するか、サンプルで試せます。");
+  const [notice, setNotice] = useState<NoticeState>({ key: "notice.ready" });
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
@@ -286,6 +293,11 @@ export default function Home() {
   const [previewPlateIndex, setPreviewPlateIndex] = useState(0);
   const [isOriginalHeld, setIsOriginalHeld] = useState(false);
   const activePaper = paperById[paperId];
+  const t = useCallback((key: MessageKey, variables: Record<string, string | number> = {}) => translate(locale, key, variables), [locale]);
+  const inkName = useCallback((inkId: InkId) => t(`ink.${inkId}` as MessageKey), [t]);
+  const paperName = useCallback((nextPaperId: PaperId) => t(`paper.${nextPaperId}` as MessageKey), [t]);
+  const presetDisplayName = useCallback((preset: PresetState) => builtInPresetIds.has(preset.id) ? t(`builtIn.${preset.id}` as MessageKey) : preset.name, [t]);
+  const notify = useCallback((key: MessageKey, variables?: Record<string, string | number>) => setNotice({ key, variables }), []);
 
   const drawArtwork = useCallback(() => {
     const canvas = canvasRef.current;
@@ -370,6 +382,22 @@ export default function Home() {
     drawArtwork();
   }, [drawArtwork, imageState.revision]);
 
+  useEffect(() => {
+    if (!localeMountedRef.current) {
+      localeMountedRef.current = true;
+      const next = initialLocale(window.localStorage.getItem(localeStorageKey), window.navigator.language);
+      if (next !== locale) {
+        queueMicrotask(() => setLocale(next));
+        return;
+      }
+    }
+    window.localStorage.setItem(localeStorageKey, locale);
+    document.documentElement.lang = htmlLang(locale);
+    document.documentElement.dataset.locale = locale;
+    document.title = t("meta.title");
+    document.querySelector<HTMLMetaElement>('meta[name="description"]')?.setAttribute("content", t("meta.description"));
+  }, [locale, t]);
+
   useEffect(() => () => {
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
     exportWorkerRef.current?.terminate();
@@ -401,7 +429,7 @@ export default function Home() {
   const loadFile = (file?: File) => {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
-      setNotice("画像ファイル（JPG / PNG / WebP など）を選んでください。");
+      notify("notice.invalidFile");
       return;
     }
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
@@ -413,9 +441,9 @@ export default function Home() {
       // `ready` remains true when replacing an already-loaded image, so use a
       // revision token to force the canvas effect to run immediately.
       setImageState((current) => ({ name: file.name, ready: true, revision: current.revision + 1 }));
-      setNotice("写真を読み込みました。スライダーで版の表情を整えてください。");
+      notify("notice.loaded");
     };
-    image.onerror = () => setNotice("この画像は読み込めませんでした。別のファイルをお試しください。");
+    image.onerror = () => notify("notice.loadFailed");
     image.src = url;
   };
 
@@ -443,24 +471,24 @@ export default function Home() {
 
   const setScreening = (screening: ScreeningMode) => {
     setSettings((current) => ({ ...current, screening }));
-    setNotice(screening === "screen" ? "SCREEN：格子状の網点で階調を表現します。" : "GRAIN：ランダムな点描密度で階調を表現します。");
+    notify(screening === "screen" ? "notice.screen" : "notice.grain");
   };
 
   const setAngleMode = (angleMode: AngleMode) => {
     setSettings((current) => ({ ...current, angleMode }));
-    setNotice(`${angleLabels[angleMode]}：${angleDescription[angleMode]}。`);
+    notify("notice.angle", { name: angleLabels[angleMode], description: t(angleDescriptionKeys[angleMode]) });
   };
 
   const toggleCustomMode = () => {
     const next = !settings.customMode;
     setSettings((current) => ({ ...current, customMode: next }));
-    setNotice(next ? "版ごとの印刷パラメーターを編集できます。" : "版別設定を解除しました。");
+    notify(next ? "notice.customOn" : "notice.customOff");
   };
 
   const toggleCustomLock = () => {
     const next = !settings.customLocked;
     setSettings((current) => ({ ...current, customLocked: next }));
-    setNotice(next ? "カスタム値を全インク版へ同期します。" : "カスタム値を選択中の版だけに適用します。");
+    notify(next ? "notice.lockOn" : "notice.lockOff");
   };
 
   const updateCustomSetting = (key: CustomScreenKey, value: number) => {
@@ -478,7 +506,7 @@ export default function Home() {
     setPaperId(nextPaperId);
     setPaperPickerOpen(false);
     setSettings((current) => ({ ...current, showPaper: true }));
-    setNotice(`${paperById[nextPaperId].name} の紙プロファイルを適用しました。紙色・粒子・繊維・インク受容性を再計算します。`);
+    notify("notice.paper", { name: paperName(nextPaperId) });
   };
 
   const applyPreset = (preset: PresetState) => {
@@ -493,11 +521,11 @@ export default function Home() {
     setFrameRatio(preset.frameRatio ?? "4:5");
     setFrameFit(preset.frameFit ?? "cover");
     setPresetGalleryOpen(false);
-    setNotice(`${preset.name} を適用しました。入力画像はそのまま保持されています。`);
+    notify("notice.presetApplied", { name: presetDisplayName(preset) });
   };
 
   const savePreset = () => {
-    const name = presetName.trim() || `MY PRESET ${savedPresets.length + 1}`;
+    const name = presetName.trim() || t("preset.defaultName", { index: savedPresets.length + 1 });
     const preset: PresetState = {
       id: `saved-${Date.now()}`,
       name,
@@ -511,7 +539,7 @@ export default function Home() {
     setSavedPresets(next);
     setPresetName("");
     window.localStorage.setItem(presetStorageKey, JSON.stringify(next));
-    setNotice(`${name} をこのブラウザに保存しました。`);
+    notify("notice.presetSaved", { name });
   };
 
   const deleteSavedPreset = (presetId: string) => {
@@ -522,12 +550,12 @@ export default function Home() {
 
   const selectInk = (inkId: InkId) => {
     setPlates((current) => current.map((plate) => plate.id === activePlateId ? { ...plate, inkId } : plate));
-    setNotice(`選択中の版を ${inkById[inkId].name} に変更しました。`);
+    notify("notice.inkChanged", { name: inkName(inkId) });
   };
 
   const addPlate = () => {
     if (plates.length >= 6) {
-      setNotice("インク版は最大6色まで追加できます。");
+      notify("notice.maxInks");
       return;
     }
     const usedInks = new Set(plates.map((plate) => plate.inkId));
@@ -540,19 +568,19 @@ export default function Home() {
       customByPlate: { ...current.customByPlate, [newPlate.id]: { ...defaultCustomScreen } },
     }));
     setActivePlateId(newPlate.id);
-    setNotice(`${nextInk.name} の版を追加しました。`);
+    notify("notice.inkAdded", { name: inkName(nextInk.id) });
   };
 
   const removePlate = (plateId: number) => {
     if (plates.length === 1) {
-      setNotice("少なくとも1つのインク版が必要です。");
+      notify("notice.minInks");
       return;
     }
     const plateIndex = plates.findIndex((plate) => plate.id === plateId);
     const nextActive = plates[plateIndex - 1] ?? plates[plateIndex + 1];
     setPlates((current) => current.filter((plate) => plate.id !== plateId));
     if (activePlateId === plateId && nextActive) setActivePlateId(nextActive.id);
-    setNotice("インク版を削除しました。");
+    notify("notice.inkRemoved");
   };
 
   const autoSelectInks = () => {
@@ -560,7 +588,7 @@ export default function Home() {
     if (!image) {
       const sampleOrder: InkId[] = ["fluorescentPink", "blue", "yellow", "green", "orange", "black"];
       setPlates((current) => current.map((plate, index) => ({ ...plate, inkId: sampleOrder[index] })));
-      setNotice("サンプルに合うインク構成を自動設定しました。");
+      notify("notice.autoSample");
       return;
     }
 
@@ -601,7 +629,7 @@ export default function Home() {
     }
     while (selected.length < plates.length) selected.push((available.shift() ?? inkById.black).id);
     setPlates((current) => current.map((plate, index) => ({ ...plate, inkId: selected[index] })));
-    setNotice("画像の主要な色相から、近いリソグラフインクを自動選択しました。");
+    notify("notice.autoImage");
   };
 
   const randomizeAll = () => {
@@ -633,7 +661,7 @@ export default function Home() {
     setPaperPickerOpen(false);
     setPreviewStage("composite");
     setPreviewPlateIndex(0);
-    setNotice(`RANDOM：${randomizedPlates.length}色・${paperById[recipe.paperId].name}・${recipe.screening.toUpperCase()} の設定を生成しました。`);
+    notify("notice.random", { count: randomizedPlates.length, paper: paperName(recipe.paperId), mode: recipe.screening.toUpperCase() });
   };
 
   const reset = () => {
@@ -648,7 +676,7 @@ export default function Home() {
     setPreviewStage("composite");
     setPreviewPlateIndex(0);
     nextPlateIdRef.current = 3;
-    setNotice("設定を初期状態に戻しました。");
+    notify("notice.reset");
   };
 
   const frameRatioValue = () => {
@@ -728,7 +756,7 @@ export default function Home() {
     setExportMenuOpen(false);
     setExportBusy(true);
     setExportProgress(0);
-    setNotice("指定した出力サイズで、処理を再計算しています…");
+    notify("notice.exporting");
     try {
       const dimensions = exportDimensions(mode, scale);
       const source = buildExportSource(dimensions.width, dimensions.height);
@@ -778,16 +806,16 @@ export default function Home() {
         }
         files["README.txt"] = new TextEncoder().encode(`IROSTRATA separations\nStage: ${separationStage}\nSize: ${dimensions.width} x ${dimensions.height}px\nResolution: 300 DPI\n`);
         downloadBlob(new Blob([createZip(files) as BlobPart], { type: "application/zip" }), `irostrata-${separationStage}-${dimensions.width}x${dimensions.height}.zip`);
-        setNotice(`${plates.length}版の${separationStage}を300 DPI PNG／ZIPで書き出しました。`);
+        notify("notice.separationsDone", { count: plates.length, stage: separationStage });
       } else {
         const output = outputs.composite;
         const bytes = await canvasBytes(output.data, dimensions.width, dimensions.height, output.channels, exportFormat);
         downloadBlob(new Blob([bytes as BlobPart], { type: exportFormat === "jpeg" ? "image/jpeg" : "image/png" }), `irostrata-${printPreset}-${dimensions.width}x${dimensions.height}.${exportFormat}`);
-        setNotice(`${dimensions.width}×${dimensions.height}px / 300 DPIで書き出しました。`);
+        notify("notice.imageDone", { width: dimensions.width, height: dimensions.height });
       }
       setExportDialogOpen(false);
     } catch (error) {
-      setNotice(error instanceof DOMException && error.name === "AbortError" ? "書き出しをキャンセルしました。" : "書き出しに失敗しました。出力サイズを下げてもう一度お試しください。");
+      notify(error instanceof DOMException && error.name === "AbortError" ? "notice.exportCancelled" : "notice.exportFailed");
     } finally {
       exportWorkerRef.current?.terminate();
       exportWorkerRef.current = null;
@@ -798,7 +826,7 @@ export default function Home() {
 
   const cancelExport = () => {
     exportWorkerRef.current?.postMessage({ type: "cancel" });
-    setNotice("現在のタイルが終わり次第、書き出しを中止します…");
+    notify("notice.exportStopping");
   };
 
   const quickExport = (scale: 1 | 2 | 3) => {
@@ -814,30 +842,35 @@ export default function Home() {
     <main className="studio-shell">
       <header className="topbar">
         <div className="topbar-start">
-          <a className="brand" href="#studio" aria-label="IROSTRATA ホーム"><span className="brand-mark">◎</span><span>IROSTRATA</span></a>
-          <nav className="mode-tabs" aria-label="編集モード"><button className="active">IMAGE</button><button onClick={() => setPresetGalleryOpen(true)}>PRESET</button></nav>
+          <a className="brand" href="#studio" aria-label={t("nav.home")}><span className="brand-mark">◎</span><span>IROSTRATA</span></a>
+          <nav className="mode-tabs" aria-label={t("nav.mode")}><button className="active">{t("nav.image")}</button><button onClick={() => setPresetGalleryOpen(true)}>{t("nav.preset")}</button></nav>
         </div>
-        <p>IROSTRATA / PRINT LAB</p>
-        <div className="export-wrap">
-          <button className="download top-download" onClick={() => setExportMenuOpen((open) => !open)} aria-expanded={exportMenuOpen}>EXPORT <span aria-hidden="true">↗</span></button>
-          {exportMenuOpen && (
-            <div className="export-menu" role="menu">
-              <button onClick={() => quickExport(1)}>1×（長辺 1,600px）</button>
-              <button onClick={() => quickExport(2)}>2×（長辺 3,200px）</button>
-              <button onClick={() => quickExport(3)}>3×（長辺 4,800px）</button>
-              <div className="menu-divider" />
-              <button onClick={() => { setExportMenuOpen(false); setExportDialogOpen(true); }}>詳細な書き出し…</button>
-            </div>
-          )}
+        <p>{t("nav.lab")}</p>
+        <div className="topbar-actions">
+          <div className="language-switch" role="group" aria-label={t("language.label")}>
+            {localeOptions.map((option) => <button key={option.id} className={locale === option.id ? "selected" : ""} onClick={() => { setLocale(option.id); setNotice({ key: "notice.ready" }); }} aria-pressed={locale === option.id} title={option.label} lang={option.htmlLang}>{option.short}</button>)}
+          </div>
+          <div className="export-wrap">
+            <button className="download top-download" onClick={() => setExportMenuOpen((open) => !open)} aria-expanded={exportMenuOpen}>{t("action.export")} <span aria-hidden="true">↗</span></button>
+            {exportMenuOpen && (
+              <div className="export-menu" role="menu">
+                <button onClick={() => quickExport(1)}>{t("export.quick1")}</button>
+                <button onClick={() => quickExport(2)}>{t("export.quick2")}</button>
+                <button onClick={() => quickExport(3)}>{t("export.quick3")}</button>
+                <div className="menu-divider" />
+                <button onClick={() => { setExportMenuOpen(false); setExportDialogOpen(true); }}>{t("export.detailed")}</button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
       <section className="studio" id="studio">
-        <aside className="control-panel" aria-label="加工設定">
+        <aside className="control-panel" aria-label={t("nav.lab")}>
           <div className="panel-heading">
-            <p className="eyebrow">IMAGE / SOURCE</p>
-            <h1>INPUT <em>IMAGE</em></h1>
-            <p className="intro">写真を1〜6色のインク版へ分解します。データはこのブラウザから外へ出ません。</p>
+            <p className="eyebrow">{t("source.eyebrow")}</p>
+            <h1>{t("source.headingA")} <em>{t("source.headingB")}</em></h1>
+            <p className="intro">{t("source.intro")}</p>
           </div>
 
           <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/*" onChange={onFileChange} />
@@ -848,16 +881,17 @@ export default function Home() {
             onDragLeave={() => setIsDragging(false)}
             onDragOver={(event) => event.preventDefault()}
             onDrop={onDrop}
+            aria-label={t("source.aria")}
           >
             <span className="upload-icon" aria-hidden="true">↑</span>
-            <span><strong>写真を選ぶ</strong><small>またはここへドロップ</small></span>
+            <span><strong>{t("source.addPhoto")}</strong><small>{t("source.drop")}</small></span>
             <span className="file-type">JPG · PNG · WEBP</span>
           </button>
-          <p className="source-name"><span>●</span> {imageState.name}</p>
+          <p className="source-name"><span>●</span> {imageState.name || t("source.sample")}</p>
 
           <div className="ink-editor">
-            <div className="section-label"><span>INK LAYERS</span><small>{plates.length} / 6 COLORS</small></div>
-            <div className="ink-tabs" role="tablist" aria-label="使用するインク版">
+            <div className="section-label"><span>{t("ink.layers")}</span><small>{t("ink.colors", { count: plates.length })}</small></div>
+            <div className="ink-tabs" role="tablist" aria-label={t("ink.tabsAria")}>
               {plates.map((plate, plateIndex) => {
                 const ink = inkById[plate.inkId];
                 const isActive = plate.id === activePlate.id;
@@ -871,17 +905,17 @@ export default function Home() {
                       onClick={() => setActivePlateId(plate.id)}
                     >
                       <i style={{ background: ink.hex }} aria-hidden="true" />
-                      <span>{ink.name}</span>
+                      <span>{inkName(ink.id)}</span>
                       <small>{settings.screening === "grain" ? "GRAIN" : `${getScreenAngle(settings.angleMode, plateIndex)}°`}</small>
                     </button>
-                    <button className="ink-tab-remove" onClick={() => removePlate(plate.id)} aria-label={`${ink.name} の版を削除`}>×</button>
+                    <button className="ink-tab-remove" onClick={() => removePlate(plate.id)} aria-label={t("ink.remove", { name: inkName(ink.id) })}>×</button>
                   </div>
                 );
               })}
-              <button className="add-ink" onClick={addPlate} disabled={plates.length >= 6} aria-label="インク版を追加">＋ <span>INK</span></button>
+              <button className="add-ink" onClick={addPlate} disabled={plates.length >= 6} aria-label={t("ink.add")}>＋ <span>INK</span></button>
             </div>
-            <div className="ink-palette" id="ink-palette" role="tabpanel" aria-label={`${inkById[activePlate.inkId].name} の色を変更`}>
-              <button className="auto-ink" onClick={autoSelectInks} title="画像を解析して、すべての版に近いインク色を自動設定します">
+            <div className="ink-palette" id="ink-palette" role="tabpanel" aria-label={t("ink.change", { name: inkName(activePlate.inkId) })}>
+              <button className="auto-ink" onClick={autoSelectInks} title={t("ink.autoTitle")}>
                 <span>A</span><small>AUTO</small>
               </button>
               {inkPalette.map((ink) => (
@@ -890,36 +924,36 @@ export default function Home() {
                   className={`ink-swatch ${activePlate.inkId === ink.id ? "selected" : ""}`}
                   style={{ "--swatch-color": ink.hex } as CSSProperties}
                   onClick={() => selectInk(ink.id)}
-                  aria-label={ink.name}
+                  aria-label={inkName(ink.id)}
                   aria-pressed={activePlate.inkId === ink.id}
-                  title={ink.name}
+                  title={inkName(ink.id)}
                 ><span aria-hidden="true" /></button>
               ))}
             </div>
-            <p className="palette-help"><b>AUTO</b> は画像の主要色から全版のインク候補を選びます。各タブを選ぶと手動で上書きできます。</p>
+            <p className="palette-help"><b>AUTO</b> {t("ink.autoHelp")}</p>
           </div>
 
           <button className="randomize-all" onClick={randomizeAll}>
-            <span><i aria-hidden="true">✣</i> RANDOM</span><small>INKS · PAPER · MODE · PARAMETERS</small>
+            <span><i aria-hidden="true">✣</i> {t("random.title")}</span><small>{t("random.detail")}</small>
           </button>
 
           <div className="control-section tone-controls">
             <div className="section-label"><span>TONE</span><small>{settings.customMode ? "CUSTOM SCREEN" : settings.screening === "screen" ? "SCREENING" : "POINTILLISM"}</small></div>
-            <div className="tone-mode-row" role="group" aria-label="ドット配列モード">
+            <div className="tone-mode-row" role="group" aria-label={t("tone.groupAria")}>
               <button className={`tone-mode ${settings.screening === "screen" ? "selected" : ""}`} onClick={() => setScreening("screen")} aria-pressed={settings.screening === "screen"}>▦ SCREEN</button>
               <button className={`tone-mode ${settings.screening === "grain" ? "selected" : ""}`} onClick={() => setScreening("grain")} aria-pressed={settings.screening === "grain"}>⠿ GRAIN</button>
               <div className="paper-picker">
-                <button className={`tone-mode paper-mode ${settings.showPaper ? "selected" : ""}`} onClick={() => setPaperPickerOpen((open) => !open)} aria-expanded={paperPickerOpen}>▣ PAPER</button>
+                <button className={`tone-mode paper-mode ${settings.showPaper ? "selected" : ""}`} onClick={() => setPaperPickerOpen((open) => !open)} aria-expanded={paperPickerOpen}>▣ {t("tone.paper")}</button>
                 {paperPickerOpen && (
-                  <div className="paper-menu" role="menu" aria-label="紙プロファイル">
-                    <p>PAPER PROFILE</p>
+                  <div className="paper-menu" role="menu" aria-label={t("tone.paperMenu")}>
+                    <p>{t("tone.paperMenu")}</p>
                     <button className={!settings.showPaper ? "selected" : ""} onClick={() => { setSettings((current) => ({ ...current, showPaper: false })); setPaperPickerOpen(false); }} role="menuitem">
-                      <i style={{ background: "#fff" }} aria-hidden="true" /><span>Paper Off</span><small>WHITE BASE</small>
+                      <i style={{ background: "#fff" }} aria-hidden="true" /><span>{t("tone.paperOff")}</span><small>{t("tone.whiteBase")}</small>
                     </button>
                     {paperProfiles.map((paper) => (
                       <button key={paper.id} className={paperId === paper.id ? "selected" : ""} onClick={() => selectPaper(paper.id)} role="menuitem">
                         <i style={{ background: paper.hex }} aria-hidden="true" />
-                        <span>{paper.name}</span>
+                        <span>{paperName(paper.id)}</span>
                         <small>{Math.round(paper.grainAmount * 100)}% GRAIN</small>
                       </button>
                     ))}
@@ -927,113 +961,113 @@ export default function Home() {
                 )}
               </div>
             </div>
-            <p className="paper-profile-summary"><b>{activePaper.name}</b> · {activePaper.hex} · 粒子 {activePaper.grainAmount * 100}% / 繊維 {activePaper.fiberAmount * 100}%</p>
+            <p className="paper-profile-summary"><b>{paperName(activePaper.id)}</b> · {activePaper.hex} · {t("tone.paperSummary", { grain: activePaper.grainAmount * 100, fiber: activePaper.fiberAmount * 100 })}</p>
 
             <div className="custom-mode-bar">
               <button className={`custom-mode-toggle ${settings.customMode ? "selected" : ""}`} onClick={toggleCustomMode} aria-pressed={settings.customMode}>
-                <span>▦ PLATE SETTINGS</span><small>{settings.customMode ? "ON" : "OFF"}</small>
+                <span>▦ {t("tone.custom")}</span><small>{settings.customMode ? "ON" : "OFF"}</small>
               </button>
               {settings.customMode && (
-                <button className="custom-lock" onClick={toggleCustomLock} aria-pressed={settings.customLocked} title={settings.customLocked ? "全インク版へ同期中" : "選択中の版だけを編集"}>
+                <button className="custom-lock" onClick={toggleCustomLock} aria-pressed={settings.customLocked} title={settings.customLocked ? t("tone.lockAll") : t("tone.lockOne")}>
                   {settings.customLocked ? "▣" : "▱"}
                 </button>
               )}
             </div>
 
             {settings.customMode ? (
-              <div className="custom-grid" aria-label="カスタムスクリーン設定">
-                {settings.screening === "screen" && <label className="custom-control custom-control-wide"><span>FREQ <output>{activeCustom.freq} lpi</output></span><input type="range" min="24" max="90" value={activeCustom.freq} onChange={(event) => updateCustomSetting("freq", Number(event.target.value))} /><small>網点の細かさ。ロック中は全版へ同期</small></label>}
-                {settings.screening === "screen" && <label className="custom-control"><span>ANGLE <output>{activeCustom.angle}°</output></span><input type="range" min="0" max="90" value={activeCustom.angle} onChange={(event) => updateCustomSetting("angle", Number(event.target.value))} /><small>格子だけの回転角</small></label>}
-                <label className="custom-control"><span>DENSITY <output>{activeCustom.density.toFixed(2)}</output></span><input type="range" min="0.2" max="1.4" step="0.01" value={activeCustom.density} onChange={(event) => updateCustomSetting("density", Number(event.target.value))} /><small>インク量の基準</small></label>
-                <label className="custom-control"><span>OPACITY <output>{activeCustom.opacity.toFixed(2)}</output></span><input type="range" min="0.2" max="1" step="0.01" value={activeCustom.opacity} onChange={(event) => updateCustomSetting("opacity", Number(event.target.value))} /><small>重なりの濃さ</small></label>
-                <label className="custom-control"><span>DOT GAIN <output>{activeCustom.dotGain.toFixed(2)}</output></span><input type="range" min="0" max="0.45" step="0.01" value={activeCustom.dotGain} onChange={(event) => updateCustomSetting("dotGain", Number(event.target.value))} /><small>濃部での点の膨らみ</small></label>
-                <label className="custom-control"><span>EDGE GRAIN <output>{activeCustom.edgeGrain.toFixed(2)}</output></span><input type="range" min="0" max="0.5" step="0.01" value={activeCustom.edgeGrain} onChange={(event) => updateCustomSetting("edgeGrain", Number(event.target.value))} /><small>点の輪郭の揺らぎ</small></label>
-                <label className="custom-control"><span>DENSITY VAR <output>{activeCustom.densityVar.toFixed(2)}</output></span><input type="range" min="0" max="0.4" step="0.01" value={activeCustom.densityVar} onChange={(event) => updateCustomSetting("densityVar", Number(event.target.value))} /><small>インク濃度の微細なムラ</small></label>
-                <label className="custom-control"><span>WARP <output>{activeCustom.warp.toFixed(3)} mm</output></span><input type="range" min="0" max="0.3" step="0.001" value={activeCustom.warp} onChange={(event) => updateCustomSetting("warp", Number(event.target.value))} /><small>紙送りによる揺らぎ</small></label>
-                <label className="custom-control"><span>OFFSET X <output>{activeCustom.offsetX.toFixed(2)} mm</output></span><input type="range" min="-0.5" max="0.5" step="0.01" value={activeCustom.offsetX} onChange={(event) => updateCustomSetting("offsetX", Number(event.target.value))} /><small>版の水平方向の位置</small></label>
-                <label className="custom-control"><span>OFFSET Y <output>{activeCustom.offsetY.toFixed(2)} mm</output></span><input type="range" min="-0.5" max="0.5" step="0.01" value={activeCustom.offsetY} onChange={(event) => updateCustomSetting("offsetY", Number(event.target.value))} /><small>版の垂直方向の位置</small></label>
-                <label className="custom-control"><span>ROTATION <output>{activeCustom.rotation.toFixed(3)}°</output></span><input type="range" min="-1" max="1" step="0.001" value={activeCustom.rotation} onChange={(event) => updateCustomSetting("rotation", Number(event.target.value))} /><small>版のわずかな回転</small></label>
+              <div className="custom-grid" aria-label={t("tone.customAria")}>
+                {settings.screening === "screen" && <label className="custom-control custom-control-wide"><span>FREQ <output>{activeCustom.freq} lpi</output></span><input type="range" min="24" max="90" value={activeCustom.freq} onChange={(event) => updateCustomSetting("freq", Number(event.target.value))} /><small>{t("tone.freqCustomHelp")}</small></label>}
+                {settings.screening === "screen" && <label className="custom-control"><span>ANGLE <output>{activeCustom.angle}°</output></span><input type="range" min="0" max="90" value={activeCustom.angle} onChange={(event) => updateCustomSetting("angle", Number(event.target.value))} /><small>{t("tone.angleHelp")}</small></label>}
+                <label className="custom-control"><span>DENSITY <output>{activeCustom.density.toFixed(2)}</output></span><input type="range" min="0.2" max="1.4" step="0.01" value={activeCustom.density} onChange={(event) => updateCustomSetting("density", Number(event.target.value))} /><small>{t("tone.densityHelp")}</small></label>
+                <label className="custom-control"><span>OPACITY <output>{activeCustom.opacity.toFixed(2)}</output></span><input type="range" min="0.2" max="1" step="0.01" value={activeCustom.opacity} onChange={(event) => updateCustomSetting("opacity", Number(event.target.value))} /><small>{t("tone.opacityHelp")}</small></label>
+                <label className="custom-control"><span>DOT GAIN <output>{activeCustom.dotGain.toFixed(2)}</output></span><input type="range" min="0" max="0.45" step="0.01" value={activeCustom.dotGain} onChange={(event) => updateCustomSetting("dotGain", Number(event.target.value))} /><small>{t("tone.dotGainHelp")}</small></label>
+                <label className="custom-control"><span>EDGE GRAIN <output>{activeCustom.edgeGrain.toFixed(2)}</output></span><input type="range" min="0" max="0.5" step="0.01" value={activeCustom.edgeGrain} onChange={(event) => updateCustomSetting("edgeGrain", Number(event.target.value))} /><small>{t("tone.edgeGrainHelp")}</small></label>
+                <label className="custom-control"><span>DENSITY VAR <output>{activeCustom.densityVar.toFixed(2)}</output></span><input type="range" min="0" max="0.4" step="0.01" value={activeCustom.densityVar} onChange={(event) => updateCustomSetting("densityVar", Number(event.target.value))} /><small>{t("tone.densityVarHelp")}</small></label>
+                <label className="custom-control"><span>WARP <output>{activeCustom.warp.toFixed(3)} mm</output></span><input type="range" min="0" max="0.3" step="0.001" value={activeCustom.warp} onChange={(event) => updateCustomSetting("warp", Number(event.target.value))} /><small>{t("tone.warpHelp")}</small></label>
+                <label className="custom-control"><span>OFFSET X <output>{activeCustom.offsetX.toFixed(2)} mm</output></span><input type="range" min="-0.5" max="0.5" step="0.01" value={activeCustom.offsetX} onChange={(event) => updateCustomSetting("offsetX", Number(event.target.value))} /><small>{t("tone.offsetXHelp")}</small></label>
+                <label className="custom-control"><span>OFFSET Y <output>{activeCustom.offsetY.toFixed(2)} mm</output></span><input type="range" min="-0.5" max="0.5" step="0.01" value={activeCustom.offsetY} onChange={(event) => updateCustomSetting("offsetY", Number(event.target.value))} /><small>{t("tone.offsetYHelp")}</small></label>
+                <label className="custom-control"><span>ROTATION <output>{activeCustom.rotation.toFixed(3)}°</output></span><input type="range" min="-1" max="1" step="0.001" value={activeCustom.rotation} onChange={(event) => updateCustomSetting("rotation", Number(event.target.value))} /><small>{t("tone.rotationHelp")}</small></label>
               </div>
             ) : (
             <div className="tone-grid">
               <label className={`tone-control ${settings.screening === "grain" ? "is-disabled" : ""}`}>
                 <span>FREQ <output>{settings.freq} lpi</output></span>
                 <input type="range" min="24" max="90" value={settings.freq} disabled={settings.screening === "grain"} onChange={(event) => updateSetting("freq", Number(event.target.value))} />
-                <small>網点の細かさ（大きいほど細かい）</small>
+                <small>{t("tone.freqHelp")}</small>
               </label>
-              {settings.screening === "grain" && <label className="tone-control"><span>GRAIN SIZE <output>{settings.grainSizeMM.toFixed(2)} mm</output></span><input type="range" min="0.15" max="1.2" step="0.01" value={settings.grainSizeMM} onChange={(event) => updateSetting("grainSizeMM", Number(event.target.value))} /><small>点描粒子の物理サイズ</small></label>}
+              {settings.screening === "grain" && <label className="tone-control"><span>GRAIN SIZE <output>{settings.grainSizeMM.toFixed(2)} mm</output></span><input type="range" min="0.15" max="1.2" step="0.01" value={settings.grainSizeMM} onChange={(event) => updateSetting("grainSizeMM", Number(event.target.value))} /><small>{t("tone.grainSizeHelp")}</small></label>}
               <label className={`tone-control ${settings.screening === "grain" ? "is-disabled" : ""}`}>
                 <span>ANGLE <output>{angleLabels[settings.angleMode]}</output></span>
-                <select value={settings.angleMode} disabled={settings.screening === "grain"} onChange={(event) => setAngleMode(event.target.value as AngleMode)} aria-label="スクリーン角度方式">
+                <select value={settings.angleMode} disabled={settings.screening === "grain"} onChange={(event) => setAngleMode(event.target.value as AngleMode)} aria-label={t("tone.angleAria")}>
                   <option value="dot">Dot on Dot</option>
                   <option value="offset">Offset</option>
                   <option value="rosette">Rosette</option>
                 </select>
-                <small>{angleDescription[settings.angleMode]}</small>
+                <small>{t(angleDescriptionKeys[settings.angleMode])}</small>
               </label>
               <label className="tone-control">
                 <span>BRIGHTNESS <output>{formatSigned(settings.brightness)}</output></span>
                 <input type="range" min="-20" max="20" value={settings.brightness} onChange={(event) => updateSetting("brightness", Number(event.target.value))} />
-                <small>全体の明るさ</small>
+                <small>{t("tone.brightnessHelp")}</small>
               </label>
               <label className="tone-control">
                 <span>CONTRAST <output>{formatSigned(settings.contrast)}</output></span>
                 <input type="range" min="-20" max="20" value={settings.contrast} onChange={(event) => updateSetting("contrast", Number(event.target.value))} />
-                <small>明暗のメリハリ</small>
+                <small>{t("tone.contrastHelp")}</small>
               </label>
             </div>
             )}
-            <p className="tone-help">{settings.customMode ? "PLATE SETTINGSは濃度・不透明度・ドットゲイン・版ズレを版ごとに調整します。SCREENでは周波数と角度も設定できます。" : settings.screening === "screen" ? "SCREENは格子状のドット。像の形は固定したまま、版ごとに格子だけを回転させます。濃い部分ほど点が大きくなり、FREQが大きいほど細かくなります。" : "GRAINは点描のカケアミ。GRAIN SIZEで粒径を決め、版の濃度・不透明度・版ズレはPLATE SETTINGSから編集できます。"}</p>
+            <p className="tone-help">{t(settings.customMode ? "tone.helpCustom" : settings.screening === "screen" ? "tone.helpScreen" : "tone.helpGrain")}</p>
           </div>
 
           <div className="control-section sliders">
-            <div className="section-label"><span>PRESS SETTINGS</span><small>LIVE</small></div>
+            <div className="section-label"><span>{t("press.heading")}</span><small>{t("press.live")}</small></div>
             <label className="range-row">
-              <span>インクの濃さ<output>{settings.ink}</output></span>
+              <span>{t("press.ink")}<output>{settings.ink}</output></span>
               <input type="range" min="45" max="100" value={settings.ink} onChange={(event) => updateSetting("ink", Number(event.target.value))} />
             </label>
             <label className="range-row">
-              <span>紙質の強さ<output>{settings.paperTexture}%</output></span>
+              <span>{t("press.paper")}<output>{settings.paperTexture}%</output></span>
               <input type="range" min="0" max="150" value={settings.paperTexture} disabled={!settings.showPaper} onChange={(event) => updateSetting("paperTexture", Number(event.target.value))} />
             </label>
             <label className="range-row">
-              <span>版ズレ<output>{settings.shift}</output></span>
+              <span>{t("press.shift")}<output>{settings.shift}</output></span>
               <input type="range" min="0" max="12" value={settings.shift} onChange={(event) => updateSetting("shift", Number(event.target.value))} />
             </label>
           </div>
 
           <div className="control-section frame-controls">
-            <div className="section-label"><span>FRAME</span><small>PREVIEW CANVAS</small></div>
-            <div className="frame-ratios" role="group" aria-label="プレビューのフレーム比率">
+            <div className="section-label"><span>{t("frame.heading")}</span><small>{t("frame.subheading")}</small></div>
+            <div className="frame-ratios" role="group" aria-label={t("frame.ratioAria")}>
               {(["original", "1:1", "4:5", "3:4", "2:3", "9:16", "sqrt2"] as FrameRatio[]).map((ratio) => (
-                <button key={ratio} className={frameRatio === ratio ? "selected" : ""} onClick={() => setFrameRatio(ratio)} aria-pressed={frameRatio === ratio}>{ratio === "original" ? "ORIG" : ratio === "sqrt2" ? "√2" : ratio}</button>
+                <button key={ratio} className={frameRatio === ratio ? "selected" : ""} onClick={() => setFrameRatio(ratio)} aria-pressed={frameRatio === ratio}>{ratio === "original" ? t("frame.original") : ratio === "sqrt2" ? "√2" : ratio}</button>
               ))}
             </div>
-            <div className="frame-fit" role="group" aria-label="画像のフレーム内配置">
-              <button className={frameFit === "cover" ? "selected" : ""} onClick={() => setFrameFit("cover")} aria-pressed={frameFit === "cover"}>CROP</button>
-              <button className={frameFit === "contain" ? "selected" : ""} onClick={() => setFrameFit("contain")} aria-pressed={frameFit === "contain"}>FIT</button>
+            <div className="frame-fit" role="group" aria-label={t("frame.fitAria")}>
+              <button className={frameFit === "cover" ? "selected" : ""} onClick={() => setFrameFit("cover")} aria-pressed={frameFit === "cover"}>{t("frame.crop")}</button>
+              <button className={frameFit === "contain" ? "selected" : ""} onClick={() => setFrameFit("contain")} aria-pressed={frameFit === "contain"}>{t("frame.fit")}</button>
             </div>
-            <p className="frame-help">入力画像の解像度に関係なく、このフレーム比率を基準にプレビューを再計算します。</p>
+            <p className="frame-help">{t("frame.help")}</p>
           </div>
 
           <div className="panel-actions">
-            <button className="reset" onClick={reset}>初期化</button>
-            <button className="download mobile-download" onClick={() => { setExportMode("image"); setExportDialogOpen(true); }}>書き出し <span aria-hidden="true">↗</span></button>
+            <button className="reset" onClick={reset}>{t("action.reset")}</button>
+            <button className="download mobile-download" onClick={() => { setExportMode("image"); setExportDialogOpen(true); }}>{t("action.export")} <span aria-hidden="true">↗</span></button>
           </div>
         </aside>
 
-        <section className="preview-panel" aria-label="仕上がりプレビュー">
-          <div className="print-meta"><span>LIVE PROOF / {frameRatio === "original" ? "ORIG" : frameRatio === "sqrt2" ? "√2" : frameRatio} / {String(plates.length).padStart(2, "0")} COLORS</span><span>{plates.map((plate) => inkById[plate.inkId].name).join(" + ")}</span></div>
+        <section className="preview-panel" aria-label={t("preview.aria")}>
+          <div className="print-meta"><span>{t("preview.proof", { ratio: frameRatio === "original" ? t("frame.original") : frameRatio === "sqrt2" ? "√2" : frameRatio, count: String(plates.length).padStart(2, "0") })}</span><span>{plates.map((plate) => inkName(plate.inkId)).join(" + ")}</span></div>
           <div className="stage-inspector">
-            <select value={previewStage} onChange={(event) => setPreviewStage(event.target.value as RenderStage)} aria-label="表示する処理工程">
+            <select value={previewStage} onChange={(event) => setPreviewStage(event.target.value as RenderStage)} aria-label={t("preview.stageAria")}>
               <option value="original">ORIGINAL</option><option value="tone">TONE</option><option value="gamut">GAMUT</option><option value="coverage">COVERAGE</option><option value="master">MASTER</option><option value="printed">PRINTED</option><option value="registered">REGISTERED</option><option value="composite">COMPOSITE</option>
             </select>
-            {(["coverage", "master", "printed", "registered"] as RenderStage[]).includes(previewStage) && <select value={previewPlateIndex} onChange={(event) => setPreviewPlateIndex(Number(event.target.value))} aria-label="表示するインク版">{plates.map((plate, index) => <option key={plate.id} value={index}>PLATE {index + 1} / {inkById[plate.inkId].name}</option>)}</select>}
+            {(["coverage", "master", "printed", "registered"] as RenderStage[]).includes(previewStage) && <select value={previewPlateIndex} onChange={(event) => setPreviewPlateIndex(Number(event.target.value))} aria-label={t("preview.plateAria")}>{plates.map((plate, index) => <option key={plate.id} value={index}>{t("preview.plate", { index: index + 1, name: inkName(plate.inkId) })}</option>)}</select>}
           </div>
           <div className={`paper-stage ${previewZoom === "fit" ? "is-fit" : "is-zoomed"}`}>
             <button
               className={`original-compare ${isOriginalHeld ? "is-held" : ""}`}
-              aria-label="押している間、同じフレーム位置で元画像を表示"
+              aria-label={t("preview.compareAria")}
               aria-pressed={isOriginalHeld}
               onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setOriginalPreview(true); }}
               onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setOriginalPreview(false); }}
@@ -1044,23 +1078,23 @@ export default function Home() {
               onBlur={() => setOriginalPreview(false)}
               onContextMenu={(event) => event.preventDefault()}
             >
-              <span>{isOriginalHeld ? "ORIGINAL" : "COMPARE"}</span><small>HOLD</small>
+              <span>{isOriginalHeld ? t("preview.original") : t("preview.compare")}</span><small>{t("preview.hold")}</small>
             </button>
-            <div className="preview-zoom" role="group" aria-label="プレビューの表示倍率">
-              <button className={previewZoom === "fit" ? "selected" : ""} onClick={() => setPreviewZoom("fit")} aria-pressed={previewZoom === "fit"}>FIT</button>
+            <div className="preview-zoom" role="group" aria-label={t("preview.zoomAria")}>
+              <button className={previewZoom === "fit" ? "selected" : ""} onClick={() => setPreviewZoom("fit")} aria-pressed={previewZoom === "fit"}>{t("frame.fit")}</button>
               <button className={previewZoom === 1 ? "selected" : ""} onClick={() => setPreviewZoom(1)} aria-pressed={previewZoom === 1}>100%</button>
               <button className={previewZoom === 2 ? "selected" : ""} onClick={() => setPreviewZoom(2)} aria-pressed={previewZoom === 2}>200%</button>
               <button className={previewZoom === 3 ? "selected" : ""} onClick={() => setPreviewZoom(3)} aria-pressed={previewZoom === 3}>300%</button>
             </div>
             <canvas
               ref={canvasRef}
-              aria-label="リソグラフ風加工プレビュー"
+              aria-label={t("preview.canvasAria")}
               style={previewZoom === "fit" ? undefined : { width: `${previewCanvasSize.width * previewZoom}px`, height: `${previewCanvasSize.height * previewZoom}px` }}
             />
           </div>
           <div className="proof-footer">
-            <p><b>TIP</b> 選んだインクごとに網点の角度を変え、版を重ねています。インクが交差する発色を調整してみてください。</p>
-            <span>{imageState.ready ? "PROCESSING ON DEVICE" : "LOADING"}</span>
+            <p><b>{t("preview.tipLabel")}</b> {t("preview.tip")}</p>
+            <span>{imageState.ready ? t("preview.processing") : t("preview.loading")}</span>
           </div>
         </section>
       </section>
@@ -1068,26 +1102,26 @@ export default function Home() {
         <div className="preset-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPresetGalleryOpen(false); }}>
           <section className="preset-gallery" role="dialog" aria-modal="true" aria-labelledby="preset-title">
             <header className="preset-header">
-              <div><p>PRESET LIBRARY</p><h2 id="preset-title">PRINT <em>RECIPES</em></h2></div>
-              <button onClick={() => setPresetGalleryOpen(false)}>CLOSE</button>
+              <div><p>{t("preset.library")}</p><h2 id="preset-title">{t("preset.headingA")} <em>{t("preset.headingB")}</em></h2></div>
+              <button onClick={() => setPresetGalleryOpen(false)}>{t("action.close")}</button>
             </header>
             <div className="preset-save">
-              <div><b>SAVE CURRENT STATE</b><span>インク・紙・網点・フレーム設定をこのブラウザへ保存します。</span></div>
-              <input value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder={`MY PRESET ${savedPresets.length + 1}`} maxLength={36} aria-label="保存するプリセット名" />
-              <button onClick={savePreset}>SAVE PRESET</button>
+              <div><b>{t("preset.saveCurrent")}</b><span>{t("preset.saveHelp")}</span></div>
+              <input value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder={t("preset.defaultName", { index: savedPresets.length + 1 })} maxLength={36} aria-label={t("preset.nameAria")} />
+              <button onClick={savePreset}>{t("action.savePreset")}</button>
             </div>
             {savedPresets.length > 0 && (
               <section className="preset-section" aria-labelledby="saved-presets-title">
-                <h3 id="saved-presets-title">SAVED / THIS BROWSER</h3>
+                <h3 id="saved-presets-title">{t("preset.saved")}</h3>
                 <div className="preset-grid">
-                  {savedPresets.map((preset) => <PresetCard key={preset.id} preset={preset} saved onApply={applyPreset} onDelete={deleteSavedPreset} />)}
+                  {savedPresets.map((preset) => <PresetCard key={preset.id} preset={preset} displayName={presetDisplayName(preset)} saved onApply={applyPreset} onDelete={deleteSavedPreset} t={t} paperName={paperName} />)}
                 </div>
               </section>
             )}
             <section className="preset-section" aria-labelledby="built-in-presets-title">
-              <h3 id="built-in-presets-title">STARTING RECIPES</h3>
+              <h3 id="built-in-presets-title">{t("preset.starting")}</h3>
               <div className="preset-grid">
-                {builtInPresets.map((preset) => <PresetCard key={preset.id} preset={preset} onApply={applyPreset} />)}
+                {builtInPresets.map((preset) => <PresetCard key={preset.id} preset={preset} displayName={presetDisplayName(preset)} onApply={applyPreset} t={t} paperName={paperName} />)}
               </div>
             </section>
           </section>
@@ -1096,38 +1130,38 @@ export default function Home() {
       {exportDialogOpen && (
         <div className="export-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setExportDialogOpen(false); }}>
           <section className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title">
-            <h2 id="export-title">EXPORT / OUTPUT</h2>
-            <p>入力画像の解像度ではなく、指定した仕上がりサイズで同じ変換パイプラインを再計算します。</p>
+            <h2 id="export-title">{t("export.heading")}</h2>
+            <p>{t("export.intro")}</p>
             <div className="export-options">
-              <label>MODE<select value={exportMode} onChange={(event) => setExportMode(event.target.value as ExportMode)}><option value="image">画像（完成イメージ）</option><option value="print">印刷サイズ（300 DPI）</option><option value="separations">分版（各インクを個別PNG）</option></select></label>
-              {exportMode === "image" && <label>SCALE<select value={exportScale} onChange={(event) => setExportScale(Number(event.target.value) as 1 | 2 | 3)}><option value="1">1×（長辺 1,600px）</option><option value="2">2×（長辺 3,200px）</option><option value="3">3×（長辺 4,800px）</option></select></label>}
-              {exportMode !== "image" && <label>SIZE<select value={printPreset} onChange={(event) => setPrintPreset(event.target.value as "A6" | "A5" | "A4")}><option value="A6">A6 / 105 × 148 mm</option><option value="A5">A5 / 148 × 210 mm</option><option value="A4">A4 / 210 × 297 mm</option></select></label>}
-              {exportMode !== "separations" && <label>FORMAT<select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}><option value="png">PNG</option><option value="jpeg">JPG</option></select></label>}
-              {exportMode === "separations" && <label>PLATE DATA<select value={separationStage} onChange={(event) => setSeparationStage(event.target.value as SeparationStage)}><option value="coverage">連続階調版 / Coverage</option><option value="master">網点マスター / Master</option><option value="registered">印刷シミュレーション版 / Registered</option></select></label>}
+              <label>{t("export.mode")}<select value={exportMode} onChange={(event) => setExportMode(event.target.value as ExportMode)}><option value="image">{t("export.modeImage")}</option><option value="print">{t("export.modePrint")}</option><option value="separations">{t("export.modeSeparations")}</option></select></label>
+              {exportMode === "image" && <label>{t("export.scale")}<select value={exportScale} onChange={(event) => setExportScale(Number(event.target.value) as 1 | 2 | 3)}><option value="1">{t("export.quick1")}</option><option value="2">{t("export.quick2")}</option><option value="3">{t("export.quick3")}</option></select></label>}
+              {exportMode !== "image" && <label>{t("export.size")}<select value={printPreset} onChange={(event) => setPrintPreset(event.target.value as "A6" | "A5" | "A4")}><option value="A6">A6 / 105 × 148 mm</option><option value="A5">A5 / 148 × 210 mm</option><option value="A4">A4 / 210 × 297 mm</option></select></label>}
+              {exportMode !== "separations" && <label>{t("export.format")}<select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}><option value="png">PNG</option><option value="jpeg">JPG</option></select></label>}
+              {exportMode === "separations" && <label>{t("export.plateData")}<select value={separationStage} onChange={(event) => setSeparationStage(event.target.value as SeparationStage)}><option value="coverage">{t("export.continuous")}</option><option value="master">{t("export.master")}</option><option value="registered">{t("export.registered")}</option></select></label>}
             </div>
             {exportBusy && <div className="export-progress"><span style={{ width: `${exportProgress}%` }} /><output>{exportProgress}%</output></div>}
-            <div className="export-actions"><button onClick={exportBusy ? cancelExport : () => setExportDialogOpen(false)}>{exportBusy ? "処理を中止" : "キャンセル"}</button><button className="primary" onClick={() => exportNow()} disabled={exportBusy}>{exportBusy ? "処理中…" : "EXPORT"}</button></div>
+            <div className="export-actions"><button onClick={exportBusy ? cancelExport : () => setExportDialogOpen(false)}>{exportBusy ? t("action.stop") : t("action.cancel")}</button><button className="primary" onClick={() => exportNow()} disabled={exportBusy}>{exportBusy ? t("action.processing") : t("action.export")}</button></div>
           </section>
         </div>
       )}
-      <p className="status" role="status" aria-live="polite">{notice}</p>
-      <footer><span>IROSTRATA / RISO-LIKE IMAGE LAB</span><span>YOUR IMAGE STAYS ON YOUR DEVICE</span></footer>
+      <p className="status" role="status" aria-live="polite">{t(notice.key, notice.variables)}</p>
+      <footer><span>{t("footer.lab")}</span><span>{t("footer.private")}</span></footer>
     </main>
   );
 }
 
-function PresetCard({ preset, saved = false, onApply, onDelete }: { preset: PresetState; saved?: boolean; onApply: (preset: PresetState) => void; onDelete?: (id: string) => void }) {
+function PresetCard({ preset, displayName, saved = false, onApply, onDelete, t, paperName }: { preset: PresetState; displayName: string; saved?: boolean; onApply: (preset: PresetState) => void; onDelete?: (id: string) => void; t: (key: MessageKey, variables?: Record<string, string | number>) => string; paperName: (id: PaperId) => string }) {
   const paper = paperById[preset.paperId] ?? paperById.warmWhite;
   const inks = preset.plates.map((plate) => inkById[plate.inkId] ?? inkById.black).slice(0, 3);
   return (
     <article className="preset-card">
-      <button className="preset-art" onClick={() => onApply(preset)} style={{ "--preset-paper": paper.hex } as CSSProperties} aria-label={`${preset.name} を適用`}>
+      <button className="preset-art" onClick={() => onApply(preset)} style={{ "--preset-paper": paper.hex } as CSSProperties} aria-label={t("preset.apply", { name: displayName })}>
         <span className="preset-stripe" />
         {inks.map((ink, index) => <i key={`${ink.id}-${index}`} style={{ "--preset-ink": ink.hex, "--preset-index": index } as CSSProperties} />)}
         <small>{preset.settings.screening === "grain" ? "GRAIN" : preset.settings.angleMode.toUpperCase()}</small>
       </button>
-      <div><button className="preset-name" onClick={() => onApply(preset)}>{preset.name}</button>{saved && onDelete && <button className="preset-delete" onClick={() => onDelete(preset.id)} aria-label={`${preset.name} を削除`}>×</button>}</div>
-      <p>{paper.name} · {preset.plates.length} INKS</p>
+      <div><button className="preset-name" onClick={() => onApply(preset)}>{displayName}</button>{saved && onDelete && <button className="preset-delete" onClick={() => onDelete(preset.id)} aria-label={t("preset.delete", { name: displayName })}>×</button>}</div>
+      <p>{paperName(paper.id)} · {t("preset.inks", { count: preset.plates.length })}</p>
     </article>
   );
 }

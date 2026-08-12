@@ -18,7 +18,7 @@ test("renders the IROSTRATA studio shell", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
-  assert.match(html, /IROSTRATA \/ PRINT LAB/);
+  assert.match(html, /RISO-STYLE PRINT LAB/);
   assert.match(html, /LIVE PROOF \/[\s\S]*?COLORS/);
   assert.match(html, /PLATE SETTINGS/);
   assert.match(html, /COMPOSITE/);
@@ -27,6 +27,9 @@ test("renders the IROSTRATA studio shell", async () => {
   assert.match(html, /GRAIN/);
   assert.match(html, /RANDOM/);
   assert.match(html, /COMPARE/);
+  assert.match(html, />EN</);
+  assert.match(html, />日本</);
+  assert.match(html, />JT</);
   assert.match(html, /type="file"/);
   assert.doesNotMatch(html, /Your site is taking shape|Building your site/);
 });

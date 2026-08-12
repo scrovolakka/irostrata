@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 const siteUrl = "https://scrovolakka.github.io/irostrata";
-const title = "IROSTRATA — リソグラフ風画像ジェネレーター";
-const description = "写真を最大6色のインク版へ分解し、網点・紙目・版ズレを細かく調整できるリソグラフ風画像ジェネレーター。";
+const title = "IROSTRATA — Riso-style Image Generator";
+const description = "Separate photos into up to six ink plates, tune halftones, paper texture and registration, then export locally.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
@@ -15,7 +15,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="ja">
+    <html lang="en">
       <body>{children}</body>
     </html>
   );

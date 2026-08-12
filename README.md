@@ -23,6 +23,13 @@ IROSTRATA is a browser-based image lab that separates images into multiple risog
 - Inspect intermediate stages: Original, Tone, Gamut, Coverage, Master, Printed, Registered, and Composite
 - Export continuous-tone plates, halftone masters, or simulated printed plates together as a ZIP archive
 - 300 DPI metadata, worker-based tiled rendering, progress reporting, and cancellation
+- English, Japanese, and Juicetopian interfaces with a persistent language switcher
+
+## Localization
+
+Use the `EN`, `日本`, and `JT` controls in the header to switch languages. The selection is stored in the current browser and updates interface copy, live notices, ink and paper names, preset labels, document metadata, and the HTML language tag.
+
+The Juicetopian translation uses attested modern vocabulary such as `iro` (color), `strata` (layer), `karta` (paper), and `montra` (display). Contemporary print and computing terms—including SCREEN, GRAIN, PNG, and DPI—remain technical trade loanwords instead of introducing unsupported canonical vocabulary.
 
 ## Paper Profiles
 
@@ -94,6 +101,7 @@ Presets saved from `PRESET` include inks, paper, screening, custom plate setting
 
 - `app/page.tsx` — static route
 - `app/studio.tsx` — editor UI, image input, presets, and export
+- `app/i18n.ts` — English, Japanese, and Juicetopian dictionaries and locale helpers
 - `app/engine.ts` — color separation, screening, paper simulation, printing, and compositing
 - `app/export.worker.ts` — high-resolution tiled rendering and progress reporting
 - `app/export-utils.ts` — ZIP generation and 300 DPI metadata for PNG and JPEG

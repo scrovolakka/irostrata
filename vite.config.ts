@@ -44,9 +44,16 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    // Bind on every local interface so a phone or tablet on the same network
+    // can open the development preview. Vite still serves the app locally; it
+    // does not publish it to the internet.
+    server: {
+      host: "0.0.0.0",
+      ...(isCodexSeatbeltSandbox
+        ? { watch: { useFsEvents: false, usePolling: true } }
+        : {}),
+    },
+    preview: { host: "0.0.0.0" },
     plugins: [
       vinext(),
       sites(),

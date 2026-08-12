@@ -1,32 +1,32 @@
 # IROSTRATA
 
-ブラウザだけで画像をリソグラフ風の複数インク版へ分解し、網点・紙・版ズレを調整して書き出す画像加工ラボです。入力画像はサーバーへ送信せず、ブラウザ上のCanvasで処理します。
+IROSTRATA is a browser-based image lab that separates images into multiple risograph-style ink plates. Adjust halftones, paper texture, and registration, then export the result—all without uploading the source image to a server. Processing happens locally in the browser with Canvas.
 
-> 実際のリソグラフ印刷や特定アプリの出力を完全に再現するものではありません。印刷の色分解・網点・紙目の考え方を取り入れた、制作向けのシミュレーターです。
+> IROSTRATA does not attempt to reproduce physical risograph printing or the output of any specific application exactly. It is a production-oriented simulator inspired by print color separation, halftone screening, and paper texture.
 
-## 主な機能
+## Features
 
-- 1〜6色のインク版を追加し、版ごとにパレットからインクを選択
-- `AUTO` による画像の主要色を基にしたインク候補の自動選択
-- 印刷色の吸収と紙色を考慮した、OKLabベースの多色分解
-- `SCREEN`（格子状網点）と `GRAIN`（点描）の2つの階調表現
-- GRAIN専用の物理粒径設定と、両モード共通の版別濃度・不透明度・版ズレ調整
-- Dot on Dot / Offset / Rosette のスクリーン角度方式
-- 版ごとの周波数、角度、濃度、ドットゲイン、版ズレ、ワープなどを調整する `CUSTOMIZE` モード
-- Warm White / Natural / Recycled Gray / Kraft / White の紙プロファイル
-  - 紙色だけでなく、粒子、繊維、インク受容ムラをレンダーへ反映
-- 組み込みの印刷レシピ8種と、ブラウザ内へ保存できる名前付きプリセット
-- フレーム比率、CROP / FIT、プレビュー倍率（FIT / 100% / 200% / 300%）
-- 押している間だけ、現在のフレーム比率・クロップ位置のまま元画像へ切り替える比較表示
-- インク数・色、紙、SCREEN / GRAIN、印刷パラメーターをまとめて生成するランダム設定
-- PNG / JPGの完成画像、または各インク版の分版PNGを書き出し
-- Original / Tone / Gamut / Coverage / Master / Printed / Registered / Composite の中間工程表示
-- 連続階調版、網点マスター、印刷シミュレーション版のZIP一括書き出し
-- 300 DPIメタデータ、Worker＋タイル処理、進捗表示、キャンセル
+- Add one to six ink plates and select an ink for each plate from the palette
+- Automatically select ink candidates based on the image's dominant colors with `AUTO`
+- OKLab-based multicolor separation that accounts for ink absorption and paper color
+- Two tone-rendering modes: `SCREEN` for regular halftone grids and `GRAIN` for stippled dots
+- Physical grain-size controls for GRAIN, plus per-plate density, opacity, and registration controls shared by both modes
+- Dot on Dot, Offset, and Rosette screen-angle methods
+- `CUSTOMIZE` mode for per-plate frequency, angle, density, dot gain, registration, warp, and related settings
+- Five paper profiles: Warm White, Natural, Recycled Gray, Kraft, and White
+  - Paper color, grain, fibers, and ink-acceptance variation all affect the render
+- Eight built-in print recipes and named presets saved in the browser
+- Frame ratios, CROP / FIT placement, and FIT / 100% / 200% / 300% preview zoom
+- Press-and-hold comparison with the original image, synchronized to the current frame ratio and crop position
+- Random generation of ink count and colors, paper, SCREEN / GRAIN mode, and print parameters
+- Export the finished image as PNG or JPG, or export each ink separation as PNG
+- Inspect intermediate stages: Original, Tone, Gamut, Coverage, Master, Printed, Registered, and Composite
+- Export continuous-tone plates, halftone masters, or simulated printed plates together as a ZIP archive
+- 300 DPI metadata, worker-based tiled rendering, progress reporting, and cancellation
 
-## 紙プロファイル
+## Paper Profiles
 
-| 紙 | sRGB | 粒量 | 粒スケール | 繊維量 | インク受容ムラ |
+| Paper | sRGB | Grain Amount | Grain Scale | Fiber Amount | Ink-Acceptance Variation |
 | --- | --- | ---: | ---: | ---: | ---: |
 | Warm White | `#F4EEDC` | 5% | 0.35 mm | 50% | 8% |
 | Natural | `#E9DFC8` | 5% | 0.35 mm | 50% | 8% |
@@ -34,28 +34,28 @@
 | Kraft | `#BF9C6B` | 5% | 0.55 mm | 62% | 10% |
 | White | `#FFFFFF` | 0% | 0.35 mm | 0% | 2% |
 
-## ローカル起動
+## Running Locally
 
-必要環境: Node.js 22.13以上
+Requirement: Node.js 22.13 or later.
 
 ```bash
 npm install
 npm run dev
 ```
 
-起動後、表示されたローカルURL（通常は `http://localhost:3001`）を開いてください。
+Open the local URL shown in the terminal, usually `http://localhost:3001`.
 
-### 同じWi-Fiのスマートフォン・タブレットで確認する
+### Testing on a Phone or Tablet over the Same Wi-Fi Network
 
-開発サーバーはLAN内から接続できる設定です。Macと端末を同じネットワークへ接続し、起動時に表示される `Network` URLを端末のブラウザで開いてください。現在のMacのIPが `192.168.11.22` なら、URLは次の形です。
+The development server accepts connections from devices on the local network. Connect the Mac and test device to the same network, then open the `Network` URL shown when the server starts. For example, if the Mac's current IP address is `192.168.11.22`, use:
 
 ```text
 http://192.168.11.22:3001
 ```
 
-IPアドレスはネットワークへ接続し直すと変わることがあります。macOSから通信許可を求められた場合は許可してください。この接続は同一ネットワーク内の開発確認用で、インターネットへ公開するものではありません。
+The IP address may change after reconnecting to the network. Allow incoming connections if macOS asks for permission. This is intended only for development testing on the same local network; it does not publish the app to the internet.
 
-## 検証
+## Validation
 
 ```bash
 npm test
@@ -65,13 +65,13 @@ npm run build
 
 ## GitHub Pages
 
-`main`へプッシュするとGitHub Actionsが静的版をビルドし、GitHub Pagesへ公開します。
+Pushing to `main` triggers GitHub Actions to build the static version and deploy it to GitHub Pages.
 
-- 公開URL: `https://scrovolakka.github.io/irostrata/`
-- Pages用のローカルビルド: `npm run build:pages`
-- 出力先: `dist/client/`
+- Live site: [https://scrovolakka.github.io/irostrata/](https://scrovolakka.github.io/irostrata/)
+- Local Pages build: `npm run build:pages`
+- Output directory: `dist/client/`
 
-## 処理の流れ
+## Processing Pipeline
 
 ```text
 input image
@@ -84,23 +84,23 @@ input image
   → preview or export
 ```
 
-プレビューと書き出しは同じ処理パイプラインを使います。元画像のピクセル寸法ではなく、選択したフレーム比率と出力サイズで再描画します。高解像度出力はWorkerでストリップ単位に処理し、すべての版の全中間バッファを一度に保持しない構成です。
+Preview and export use the same processing pipeline. The image is redrawn according to the selected frame ratio and output size rather than the source image's pixel dimensions. High-resolution exports are processed in strips by a Worker so the app does not retain every intermediate buffer for every plate at once.
 
-## プリセットの保存について
+## Preset Storage
 
-`PRESET` から保存した内容は、インク、紙、網点、カスタム設定、フレーム設定を含みます。保存先は現在のブラウザの `localStorage` です。入力画像そのものは保存しません。
+Presets saved from `PRESET` include inks, paper, screening, custom plate settings, and frame settings. They are stored in the current browser's `localStorage`. Source images are never saved.
 
-## 主な構成
+## Project Structure
 
-- `app/page.tsx` — 静的ルート
-- `app/studio.tsx` — 編集UI、画像入力、プリセット、エクスポート
-- `app/engine.ts` — 色分解、網点化、紙・印刷・合成処理
-- `app/export.worker.ts` — 高解像度のタイルレンダーと進捗通知
-- `app/export-utils.ts` — ZIP生成とPNG/JPEGの300 DPIメタデータ
-- `app/globals.css` — 印刷ラボ風のUIスタイル
-- `tests/rendered-html.test.mjs` — レンダリングのスモークテスト
+- `app/page.tsx` — static route
+- `app/studio.tsx` — editor UI, image input, presets, and export
+- `app/engine.ts` — color separation, screening, paper simulation, printing, and compositing
+- `app/export.worker.ts` — high-resolution tiled rendering and progress reporting
+- `app/export-utils.ts` — ZIP generation and 300 DPI metadata for PNG and JPEG
+- `app/globals.css` — print-lab interface styles
+- `tests/rendered-html.test.mjs` — rendering smoke tests
 
-## 技術スタック
+## Tech Stack
 
 - React 19
 - Vinext / Vite
@@ -108,7 +108,7 @@ input image
 - Canvas 2D
 - Tailwind CSS 4
 
-## 開発上の注意
+## Development Notes
 
-- 高解像度・多色・分版書き出しはブラウザ上で計算量が大きくなります。処理に時間がかかる場合は、出力サイズまたはインク数を下げてください。
-- プリセットはブラウザごとのローカル保存です。別の端末やブラウザには同期されません。
+- High-resolution, multicolor, and separation exports can be computationally expensive in the browser. Reduce the output size or number of ink plates if processing takes too long.
+- Presets are stored locally per browser. They do not sync between devices or browsers.

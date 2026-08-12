@@ -81,6 +81,9 @@ type PresetState = {
   frameFit: "cover" | "contain";
 };
 
+const presetStorageKey = "irostrata.saved-presets.v1";
+const legacyPresetStorageKey = "inkloom.saved-presets.v1";
+
 const defaultCustomScreen: CustomScreenSettings = {
   freq: 44,
   angle: 13,
@@ -374,17 +377,24 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      const stored = window.localStorage.getItem("inkloom.saved-presets.v1");
+      const currentStored = window.localStorage.getItem(presetStorageKey);
+      const legacyStored = window.localStorage.getItem(legacyPresetStorageKey);
+      const stored = currentStored ?? legacyStored;
       if (!stored) return;
       const parsed = JSON.parse(stored) as PresetState[];
       if (Array.isArray(parsed)) {
         const valid = parsed.filter((preset) => preset?.name && paperById[preset.paperId] && Array.isArray(preset.plates));
+        if (!currentStored && legacyStored) {
+          window.localStorage.setItem(presetStorageKey, JSON.stringify(valid));
+          window.localStorage.removeItem(legacyPresetStorageKey);
+        }
         const timer = window.setTimeout(() => setSavedPresets(valid), 0);
         return () => window.clearTimeout(timer);
       }
     } catch {
       // A malformed local preset must never prevent the editor from opening.
-      window.localStorage.removeItem("inkloom.saved-presets.v1");
+      window.localStorage.removeItem(presetStorageKey);
+      window.localStorage.removeItem(legacyPresetStorageKey);
     }
   }, []);
 
@@ -500,14 +510,14 @@ export default function Home() {
     const next = [...savedPresets, preset].slice(-12);
     setSavedPresets(next);
     setPresetName("");
-    window.localStorage.setItem("inkloom.saved-presets.v1", JSON.stringify(next));
+    window.localStorage.setItem(presetStorageKey, JSON.stringify(next));
     setNotice(`${name} をこのブラウザに保存しました。`);
   };
 
   const deleteSavedPreset = (presetId: string) => {
     const next = savedPresets.filter((preset) => preset.id !== presetId);
     setSavedPresets(next);
-    window.localStorage.setItem("inkloom.saved-presets.v1", JSON.stringify(next));
+    window.localStorage.setItem(presetStorageKey, JSON.stringify(next));
   };
 
   const selectInk = (inkId: InkId) => {
@@ -766,13 +776,13 @@ export default function Home() {
           const output = outputs[`plate-${index}`];
           files[`plate-${String(index + 1).padStart(2, "0")}-${enginePlates[index].inkId}-${separationStage}.png`] = await canvasBytes(output.data, dimensions.width, dimensions.height, output.channels);
         }
-        files["README.txt"] = new TextEncoder().encode(`INKLOOM separations\nStage: ${separationStage}\nSize: ${dimensions.width} x ${dimensions.height}px\nResolution: 300 DPI\n`);
-        downloadBlob(new Blob([createZip(files) as BlobPart], { type: "application/zip" }), `inkloom-${separationStage}-${dimensions.width}x${dimensions.height}.zip`);
+        files["README.txt"] = new TextEncoder().encode(`IROSTRATA separations\nStage: ${separationStage}\nSize: ${dimensions.width} x ${dimensions.height}px\nResolution: 300 DPI\n`);
+        downloadBlob(new Blob([createZip(files) as BlobPart], { type: "application/zip" }), `irostrata-${separationStage}-${dimensions.width}x${dimensions.height}.zip`);
         setNotice(`${plates.length}版の${separationStage}を300 DPI PNG／ZIPで書き出しました。`);
       } else {
         const output = outputs.composite;
         const bytes = await canvasBytes(output.data, dimensions.width, dimensions.height, output.channels, exportFormat);
-        downloadBlob(new Blob([bytes as BlobPart], { type: exportFormat === "jpeg" ? "image/jpeg" : "image/png" }), `inkloom-${printPreset}-${dimensions.width}x${dimensions.height}.${exportFormat}`);
+        downloadBlob(new Blob([bytes as BlobPart], { type: exportFormat === "jpeg" ? "image/jpeg" : "image/png" }), `irostrata-${printPreset}-${dimensions.width}x${dimensions.height}.${exportFormat}`);
         setNotice(`${dimensions.width}×${dimensions.height}px / 300 DPIで書き出しました。`);
       }
       setExportDialogOpen(false);
@@ -804,10 +814,10 @@ export default function Home() {
     <main className="studio-shell">
       <header className="topbar">
         <div className="topbar-start">
-          <a className="brand" href="#studio" aria-label="INKLOOM ホーム"><span className="brand-mark">◎</span><span>INKLOOM</span></a>
+          <a className="brand" href="#studio" aria-label="IROSTRATA ホーム"><span className="brand-mark">◎</span><span>IROSTRATA</span></a>
           <nav className="mode-tabs" aria-label="編集モード"><button className="active">IMAGE</button><button onClick={() => setPresetGalleryOpen(true)}>PRESET</button></nav>
         </div>
-        <p>INKLOOM / PRINT LAB</p>
+        <p>IROSTRATA / PRINT LAB</p>
         <div className="export-wrap">
           <button className="download top-download" onClick={() => setExportMenuOpen((open) => !open)} aria-expanded={exportMenuOpen}>EXPORT <span aria-hidden="true">↗</span></button>
           {exportMenuOpen && (
@@ -1101,7 +1111,7 @@ export default function Home() {
         </div>
       )}
       <p className="status" role="status" aria-live="polite">{notice}</p>
-      <footer><span>INKLOOM / RISO-LIKE IMAGE LAB</span><span>YOUR IMAGE STAYS ON YOUR DEVICE</span></footer>
+      <footer><span>IROSTRATA / RISO-LIKE IMAGE LAB</span><span>YOUR IMAGE STAYS ON YOUR DEVICE</span></footer>
     </main>
   );
 }

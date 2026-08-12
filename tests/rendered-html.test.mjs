@@ -13,12 +13,12 @@ async function render() {
   );
 }
 
-test("renders the INKLOOM studio shell", async () => {
+test("renders the IROSTRATA studio shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
-  assert.match(html, /INKLOOM \/ PRINT LAB/);
+  assert.match(html, /IROSTRATA \/ PRINT LAB/);
   assert.match(html, /LIVE PROOF \/[\s\S]*?COLORS/);
   assert.match(html, /PLATE SETTINGS/);
   assert.match(html, /COMPOSITE/);

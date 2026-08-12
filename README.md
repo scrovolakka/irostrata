@@ -1,4 +1,4 @@
-# INKLOOM
+# IROSTRATA
 
 ブラウザだけで画像をリソグラフ風の複数インク版へ分解し、網点・紙・版ズレを調整して書き出す画像加工ラボです。入力画像はサーバーへ送信せず、ブラウザ上のCanvasで処理します。
 
@@ -67,7 +67,7 @@ npm run build
 
 `main`へプッシュするとGitHub Actionsが静的版をビルドし、GitHub Pagesへ公開します。
 
-- 公開URL: `https://scrovolakka.github.io/inkloom/`
+- 公開URL: `https://scrovolakka.github.io/irostrata/`
 - Pages用のローカルビルド: `npm run build:pages`
 - 出力先: `dist/client/`
 

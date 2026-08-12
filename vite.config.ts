@@ -44,7 +44,7 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    base: process.env.GITHUB_PAGES === "true" ? "/inkloom/" : undefined,
+    base: process.env.GITHUB_PAGES === "true" ? "/irostrata/" : undefined,
     // Bind on every local interface so a phone or tablet on the same network
     // can open the development preview. Vite still serves the app locally; it
     // does not publish it to the internet.

@@ -954,7 +954,7 @@ export default function Home() {
 
           <div className="panel-actions">
             <button className="reset" onClick={reset}>初期化</button>
-            <button className="download mobile-download" onClick={() => { setExportMode("image"); setExportDialogOpen(true); }}>PNGを保存 <span aria-hidden="true">↗</span></button>
+            <button className="download mobile-download" onClick={() => { setExportMode("image"); setExportDialogOpen(true); }}>書き出し <span aria-hidden="true">↗</span></button>
           </div>
         </aside>
 

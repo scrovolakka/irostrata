@@ -25,6 +25,8 @@ test("renders the INKLOOM studio shell", async () => {
   assert.match(html, /ORIG/);
   assert.match(html, /Dot on Dot/);
   assert.match(html, /GRAIN/);
+  assert.match(html, /RANDOM/);
+  assert.match(html, /COMPARE/);
   assert.match(html, /type="file"/);
   assert.doesNotMatch(html, /Your site is taking shape|Building your site/);
 });

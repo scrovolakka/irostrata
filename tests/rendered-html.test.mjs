@@ -20,7 +20,8 @@ test("renders the INKLOOM studio shell", async () => {
   const html = await response.text();
   assert.match(html, /INKLOOM \/ PRINT LAB/);
   assert.match(html, /LIVE PROOF \/[\s\S]*?COLORS/);
-  assert.match(html, /CUSTOMIZE/);
+  assert.match(html, /PLATE SETTINGS/);
+  assert.match(html, /COMPOSITE/);
   assert.match(html, /ORIG/);
   assert.match(html, /Dot on Dot/);
   assert.match(html, /GRAIN/);

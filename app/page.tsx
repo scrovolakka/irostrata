@@ -1,10 +1,12 @@
 "use client";
 
 import { ChangeEvent, CSSProperties, DragEvent, useCallback, useEffect, useRef, useState } from "react";
-import { renderPipeline } from "./engine";
+import { renderPipeline, renderStageImage, type RenderStage } from "./engine";
 import { calculateWorkSize } from "../lib/render-size.mjs";
+import { normalizePresetState } from "../lib/preset-state.mjs";
+import { createZip, setJpegDpi, setPngDpi } from "./export-utils";
 
-type InkId = "black" | "blue" | "fluorescentPink" | "green" | "orange" | "red" | "yellow" | "burgundy" | "teal" | "purple" | "brown" | "slate" | "mediumBlue" | "violet" | "cornflower" | "sunflower";
+type InkId = "black" | "blue" | "fluorescentPink" | "green" | "orange" | "red" | "brightRed" | "yellow" | "burgundy" | "teal" | "purple" | "brown" | "slate" | "mediumBlue" | "violet" | "cornflower" | "sunflower";
 
 type InkColor = {
   id: InkId;
@@ -21,12 +23,14 @@ type ScreeningMode = "screen" | "grain";
 type AngleMode = "dot" | "offset" | "rosette";
 type ExportMode = "image" | "print" | "separations";
 type ExportFormat = "png" | "jpeg";
+type SeparationStage = "coverage" | "master" | "registered";
 type FrameRatio = "original" | "1:1" | "4:5" | "3:4" | "2:3" | "9:16" | "sqrt2";
 type PaperId = "warmWhite" | "natural" | "recycledGray" | "kraft" | "white";
 type CustomScreenKey = "freq" | "angle" | "density" | "opacity" | "dotGain" | "edgeGrain" | "densityVar" | "warp" | "offsetX" | "offsetY" | "rotation";
 
 type CustomScreenSettings = {
   freq: number;
+  grainSizeMM: number;
   angle: number;
   density: number;
   opacity: number;
@@ -95,7 +99,8 @@ const inkPalette: InkColor[] = [
   { id: "fluorescentPink", name: "FLUORESCENT PINK", hex: "#ff48b0" },
   { id: "green", name: "GREEN", hex: "#00a95c" },
   { id: "orange", name: "ORANGE", hex: "#ff6c2f" },
-  { id: "red", name: "BRIGHT RED", hex: "#f15060" },
+  { id: "red", name: "RED", hex: "#ff665e" },
+  { id: "brightRed", name: "BRIGHT RED", hex: "#f15060" },
   { id: "yellow", name: "YELLOW", hex: "#ffe800" },
   { id: "burgundy", name: "BURGUNDY", hex: "#914e72" },
   { id: "teal", name: "TEAL", hex: "#00838a" },
@@ -124,6 +129,7 @@ const defaultSettings: Settings = {
     2: { ...defaultCustomScreen },
   },
   freq: 71,
+  grainSizeMM: 0.45,
   brightness: 0,
   contrast: 0,
   ink: 84,
@@ -178,15 +184,6 @@ function getScreenAngle(angleMode: AngleMode, plateIndex: number) {
   if (angleMode === "dot") return 0;
   if (angleMode === "rosette") return rosetteAngles[plateIndex % rosetteAngles.length];
   return offsetAngles[plateIndex % offsetAngles.length];
-}
-
-function clamp(value: number, minimum = 0, maximum = 255) {
-  return Math.max(minimum, Math.min(maximum, value));
-}
-
-function pseudoNoise(x: number, y: number, seed = 0) {
-  const value = Math.sin(x * 12.9898 + y * 78.233 + seed * 37.719) * 43758.5453;
-  return value - Math.floor(value);
 }
 
 function hexToRgb(hex: string) {
@@ -250,6 +247,8 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  const exportWorkerRef = useRef<Worker | null>(null);
+  const previewPipelineCacheRef = useRef<{ separationKey: string; screenKey: string; printKey: string; registrationKey: string; result: ReturnType<typeof renderPipeline> } | null>(null);
   const nextPlateIdRef = useRef(3);
   const [plates, setPlates] = useState<InkPlate[]>(initialPlates);
   const [activePlateId, setActivePlateId] = useState(1);
@@ -260,9 +259,11 @@ export default function Home() {
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
   const [exportScale, setExportScale] = useState<1 | 2 | 3>(1);
   const [exportMode, setExportMode] = useState<ExportMode>("image");
   const [exportFormat, setExportFormat] = useState<ExportFormat>("png");
+  const [separationStage, setSeparationStage] = useState<SeparationStage>("coverage");
   const [printPreset, setPrintPreset] = useState<"A6" | "A5" | "A4">("A4");
   const [frameRatio, setFrameRatio] = useState<FrameRatio>("4:5");
   const [frameFit, setFrameFit] = useState<"cover" | "contain">("cover");
@@ -273,6 +274,8 @@ export default function Home() {
   const [presetName, setPresetName] = useState("");
   const [previewZoom, setPreviewZoom] = useState<"fit" | 1 | 2 | 3>("fit");
   const [previewCanvasSize, setPreviewCanvasSize] = useState({ width: 540, height: 675 });
+  const [previewStage, setPreviewStage] = useState<RenderStage>("composite");
+  const [previewPlateIndex, setPreviewPlateIndex] = useState(0);
   const activePaper = paperById[paperId];
 
   const drawArtwork = useCallback(() => {
@@ -312,12 +315,20 @@ export default function Home() {
     const enginePlates = plates.map((plate) => ({
       id: plate.id,
       inkId: plate.inkId,
-      custom: settings.customMode && settings.screening === "screen" ? { ...defaultCustomScreen, ...(settings.customByPlate[plate.id] ?? {}) } : undefined,
+      custom: settings.customMode ? { ...defaultCustomScreen, ...(settings.customByPlate[plate.id] ?? {}) } : undefined,
     }));
-    const result = renderPipeline(source.getImageData(0, 0, width, height), enginePlates, {
+    const sourceImage = source.getImageData(0, 0, width, height);
+    const plateSignature = enginePlates.map((plate) => `${plate.inkId}:${plate.custom?.density ?? 1}:${plate.custom?.opacity ?? 0.7}`).join("|");
+    const separationKey = [imageState.revision, width, height, frameFit, paperId, settings.showPaper, plateSignature, settings.brightness, settings.contrast, settings.ink].join(":");
+    const screenKey = [separationKey, settings.screening, settings.freq, settings.grainSizeMM, settings.angleMode, enginePlates.map((plate) => `${plate.custom?.freq ?? ""}:${plate.custom?.angle ?? ""}:${plate.custom?.dotGain ?? ""}`).join("|")].join(":");
+    const printKey = [screenKey, settings.showPaper, settings.paperTexture, paperId, enginePlates.map((plate) => `${plate.custom?.edgeGrain ?? ""}:${plate.custom?.densityVar ?? ""}`).join("|")].join(":");
+    const registrationKey = [printKey, settings.shift, enginePlates.map((plate) => `${plate.custom?.warp ?? ""}:${plate.custom?.offsetX ?? ""}:${plate.custom?.offsetY ?? ""}:${plate.custom?.rotation ?? ""}`).join("|")].join(":");
+    const cached = previewPipelineCacheRef.current;
+    const result = renderPipeline(sourceImage, enginePlates, {
       screening: settings.screening,
       angleMode: settings.angleMode,
       freq: settings.customMode ? defaultCustomScreen.freq : settings.freq,
+      grainSizeMM: settings.grainSizeMM,
       brightness: settings.brightness,
       contrast: settings.contrast,
       ink: settings.ink,
@@ -329,127 +340,19 @@ export default function Home() {
       paperGrainScaleMM: activePaper.grainScaleMM,
       paperFiberAmount: activePaper.fiberAmount,
       paperInkAcceptanceVariation: activePaper.inkAcceptanceVariation,
+      coverageOverride: cached?.separationKey === separationKey ? cached.result.coverage : undefined,
+      masterOverride: cached?.screenKey === screenKey ? cached.result.master : undefined,
+      printedOverride: cached?.printKey === printKey ? cached.result.printed : undefined,
+      registeredOverride: cached?.registrationKey === registrationKey ? cached.result.registered : undefined,
     });
     canvas.width = width;
     canvas.height = height;
-    ctx.putImageData(result.imageData, 0, 0);
-    return;
-
-    /* Legacy Canvas renderer retained below as a visual fallback reference. */
-    const pixels = source.getImageData(0, 0, width, height).data;
-    ctx.fillStyle = settings.showPaper ? "#f1eee4" : "#111111";
-    ctx.fillRect(0, 0, width, height);
-    ctx.globalCompositeOperation = settings.showPaper ? "multiply" : "source-over";
-    // Keep the screen fine enough to match the physical dot scale of the
-    // reference app. Higher FREQ means a tighter lattice.
-    const presetDotStep = clamp(11.5 - settings.freq * 0.13, 4.2, 8.8);
-    const strengthFactor = settings.ink / 100;
-    const contrastFactor = 1 + settings.contrast / 100;
-    const brightnessOffset = settings.brightness / 125;
-    const drawPlate = (plate: InkPlate, plateIndex: number) => {
-      const ink = inkById[plate.inkId];
-      const inkRgb = hexToRgb(ink.hex);
-      const inkHsv = rgbToHsv(inkRgb.red, inkRgb.green, inkRgb.blue);
-      const custom = settings.customMode && settings.screening === "screen"
-        ? { ...defaultCustomScreen, ...(settings.customByPlate[plate.id] ?? {}) }
-        : null;
-      const angleDegrees = (custom?.angle ?? getScreenAngle(settings.angleMode, plateIndex)) + (custom?.rotation ?? 0);
-      const angle = (Math.PI / 180) * (settings.screening === "grain" ? 0 : angleDegrees);
-      const direction = plateIndex % 2 === 0 ? -1 : 1;
-      const offsetX = direction * settings.shift * (0.24 + plateIndex * 0.12) + (custom?.offsetX ?? 0) * 11;
-      const offsetY = -direction * settings.shift * (0.18 + plateIndex * 0.08) + (custom?.offsetY ?? 0) * 11;
-      const cosine = Math.cos(angle);
-      const sine = Math.sin(angle);
-      const customDotStep = custom ? clamp(11.5 - custom.freq * 0.13, 4.2, 8.8) : presetDotStep;
-      const markBase = settings.screening === "grain" ? 5.8 : customDotStep;
-      const warpAmount = (custom?.warp ?? 0) * 16;
-      ctx.save();
-      ctx.fillStyle = ink.hex;
-      ctx.globalAlpha = custom?.opacity ?? 0.88;
-
-      const drawMark = (markX: number, markY: number, density: number, seed: number) => {
-        const variation = custom ? 1 + (pseudoNoise(markX, markY, seed + 11) - 0.5) * custom.densityVar : 1;
-        const effectiveDensity = clamp(density * (custom?.density ?? 1) * variation, 0, 1);
-        const jitter = (pseudoNoise(markX, markY, seed) - 0.5) * (custom ? 0.8 + custom.edgeGrain * 4 : 0.8);
-        const gain = custom ? 1 + custom.dotGain * 0.9 : 1;
-        const radius = Math.max(0.45, Math.pow(effectiveDensity, 0.72) * markBase * (settings.screening === "grain" ? 0.29 : 0.47) * gain + jitter);
-        ctx.beginPath();
-        ctx.arc(markX + offsetX, markY + offsetY, radius, 0, Math.PI * 2);
-        ctx.fill();
-      };
-
-      // The image mask stays in the original orientation. Only the halftone
-      // lattice is rotated per ink plate, matching real multi-plate screening.
-      const sampleDensity = (canvasX: number, canvasY: number) => {
-        const sourceX = Math.round(canvasX);
-        const sourceY = Math.round(canvasY);
-        if (sourceX < 0 || sourceY < 0 || sourceX >= width || sourceY >= height) return 0;
-        const pixelIndex = (sourceY * width + sourceX) * 4;
-        const red = pixels[pixelIndex];
-        const green = pixels[pixelIndex + 1];
-        const blue = pixels[pixelIndex + 2];
-        const luminance = (red * 0.27 + green * 0.66 + blue * 0.07) / 255;
-        const sourceHsv = rgbToHsv(red, green, blue);
-        const rawHueDistance = Math.abs(sourceHsv.hue - inkHsv.hue);
-        const hueDistance = Math.min(rawHueDistance, 360 - rawHueDistance) / 180;
-        const hueAffinity = 1 - hueDistance;
-        const chromaAffinity = sourceHsv.saturation * Math.pow(hueAffinity, 2.2);
-        const tone = clamp((0.5 - luminance - brightnessOffset) * contrastFactor + 0.5, 0, 1);
-        const neutralCoverage = (1 - luminance) * (0.34 + 0.46 / plates.length);
-        const colorCoverage = chromaAffinity * (0.7 + (1 - sourceHsv.value) * 0.22);
-        return clamp((tone * 0.34 + neutralCoverage + colorCoverage) * strengthFactor, 0, 1);
-      };
-
-      if (settings.screening === "screen") {
-        for (let y = -height * 0.73; y < height * 0.73; y += customDotStep) {
-          for (let x = -width * 0.73; x < width * 0.73; x += customDotStep) {
-            // Rotate the grid coordinate, then sample the unrotated image at
-            // the resulting dot location. This keeps the source silhouette
-            // fixed while each ink's screen angle changes.
-            const warpedX = x + Math.sin((y + plate.id * 19) * 0.035) * warpAmount;
-            const warpedY = y + Math.sin((x - plate.id * 13) * 0.035) * warpAmount;
-            const canvasX = cosine * warpedX - sine * warpedY + width / 2;
-            const canvasY = sine * warpedX + cosine * warpedY + height / 2;
-            const density = sampleDensity(canvasX, canvasY);
-            if (density > 0.055) drawMark(canvasX, canvasY, density, plate.id);
-          }
-        }
-      } else {
-        const grainStep = 6.5;
-        for (let y = -height * 0.73; y < height * 0.73; y += grainStep) {
-          for (let x = -width * 0.73; x < width * 0.73; x += grainStep) {
-            const canvasX = x + width / 2;
-            const canvasY = y + height / 2;
-            const density = sampleDensity(canvasX, canvasY);
-            if (density <= 0.045) continue;
-            const pointCount = Math.max(1, Math.round(density * 2.8));
-            for (let point = 0; point < pointCount; point += 1) {
-              const jitterX = (pseudoNoise(x, y, plate.id * 3 + point) - 0.5) * grainStep * 1.7;
-              const jitterY = (pseudoNoise(y, x, plate.id * 5 + point) - 0.5) * grainStep * 1.7;
-              drawMark(canvasX + jitterX, canvasY + jitterY, density, plate.id + point);
-            }
-          }
-        }
-      }
-      ctx.restore();
-    };
-
-    plates.forEach(drawPlate);
-
-    ctx.globalCompositeOperation = "source-over";
-    if (settings.paperTexture > 0 && settings.showPaper) {
-      const grainAlpha = settings.paperTexture / 340;
-      for (let y = 0; y < height; y += 3) {
-        for (let x = 0; x < width; x += 3) {
-          const tone = pseudoNoise(x, y, 7) > 0.5 ? "#ffffff" : "#3e342c";
-          ctx.fillStyle = tone;
-          ctx.globalAlpha = grainAlpha * pseudoNoise(x, y, 9);
-          ctx.fillRect(x, y, 2, 2);
-        }
-      }
-    }
-    ctx.globalAlpha = 1;
-  }, [activePaper, frameFit, frameRatio, plates, settings]);
+    previewPipelineCacheRef.current = { separationKey, screenKey, printKey, registrationKey, result };
+    ctx.putImageData(renderStageImage(result, sourceImage, enginePlates, {
+      ...settings,
+      paper: activePaper.rgb.map((channel) => channel / 255) as [number, number, number],
+    }, previewStage, previewPlateIndex), 0, 0);
+  }, [activePaper, frameFit, frameRatio, imageState.revision, paperId, plates, previewPlateIndex, previewStage, settings]);
 
   useEffect(() => {
     drawArtwork();
@@ -457,6 +360,7 @@ export default function Home() {
 
   useEffect(() => () => {
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    exportWorkerRef.current?.terminate();
   }, []);
 
   useEffect(() => {
@@ -506,11 +410,11 @@ export default function Home() {
     setIsDragging(false);
     loadFile(event.dataTransfer.files?.[0]);
   };
-  const updateSetting = (key: "freq" | "brightness" | "contrast" | "ink" | "paperTexture" | "shift", value: number) => setSettings((current) => ({ ...current, [key]: value }));
+  const updateSetting = (key: "freq" | "grainSizeMM" | "brightness" | "contrast" | "ink" | "paperTexture" | "shift", value: number) => setSettings((current) => ({ ...current, [key]: value }));
   const formatSigned = (value: number) => `${value >= 0 ? "+" : ""}${(value / 10).toFixed(1)}`;
 
   const setScreening = (screening: ScreeningMode) => {
-    setSettings((current) => ({ ...current, screening, customMode: screening === "screen" ? current.customMode : false }));
+    setSettings((current) => ({ ...current, screening }));
     setNotice(screening === "screen" ? "SCREEN：格子状の網点で階調を表現します。" : "GRAIN：ランダムな点描密度で階調を表現します。");
   };
 
@@ -520,13 +424,9 @@ export default function Home() {
   };
 
   const toggleCustomMode = () => {
-    if (settings.screening === "grain") {
-      setNotice("GRAINではBrightness / Contrastだけを調整できます。");
-      return;
-    }
     const next = !settings.customMode;
     setSettings((current) => ({ ...current, customMode: next }));
-    setNotice(next ? "CUSTOM SCREEN：版ごとの網点パラメーターを編集できます。" : "CUSTOM SCREENを解除しました。");
+    setNotice(next ? "版ごとの印刷パラメーターを編集できます。" : "版別設定を解除しました。");
   };
 
   const toggleCustomLock = () => {
@@ -554,15 +454,13 @@ export default function Home() {
   };
 
   const applyPreset = (preset: PresetState) => {
-    const normalizedPlates = preset.plates.slice(0, 6).map((plate, index) => ({
-      id: index + 1,
-      inkId: inkById[plate.inkId] ? plate.inkId : "black",
-    }));
+    const normalized = normalizePresetState(preset, defaultCustomScreen, defaultSettings) as { plates: InkPlate[]; settings: Settings };
+    const normalizedPlates = normalized.plates.map((plate) => ({ ...plate, inkId: inkById[plate.inkId] ? plate.inkId : "black" as InkId }));
     if (!normalizedPlates.length) return;
     setPlates(normalizedPlates);
     setActivePlateId(normalizedPlates[0].id);
     nextPlateIdRef.current = normalizedPlates.length + 1;
-    setSettings({ ...defaultSettings, ...preset.settings, customByPlate: preset.settings.customByPlate ?? {} });
+    setSettings(normalized.settings);
     setPaperId(paperById[preset.paperId] ? preset.paperId : "warmWhite");
     setFrameRatio(preset.frameRatio ?? "4:5");
     setFrameFit(preset.frameFit ?? "cover");
@@ -679,11 +577,16 @@ export default function Home() {
   };
 
   const reset = () => {
-    setSettings(defaultSettings);
-    setPlates(initialPlates);
+    setSettings({ ...defaultSettings, customByPlate: { 1: { ...defaultCustomScreen }, 2: { ...defaultCustomScreen } } });
+    setPlates(initialPlates.map((plate) => ({ ...plate })));
     setActivePlateId(1);
     setPaperId("warmWhite");
     setPaperPickerOpen(false);
+    setFrameRatio("4:5");
+    setFrameFit("cover");
+    setPreviewZoom("fit");
+    setPreviewStage("composite");
+    setPreviewPlateIndex(0);
     nextPlateIdRef.current = 3;
     setNotice("設定を初期状態に戻しました。");
   };
@@ -717,6 +620,27 @@ export default function Home() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  const canvasBytes = async (data: Uint8ClampedArray, width: number, height: number, channels: number, format: ExportFormat = "png") => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("canvas");
+    const rgba = channels === 4 ? data : (() => {
+      const expanded = new Uint8ClampedArray(width * height * 4);
+      for (let pixel = 0; pixel < data.length; pixel += 1) {
+        const offset = pixel * 4;
+        expanded[offset] = expanded[offset + 1] = expanded[offset + 2] = data[pixel];
+        expanded[offset + 3] = 255;
+      }
+      return expanded;
+    })();
+    context.putImageData(new ImageData(rgba, width, height), 0, 0);
+    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("encode")), format === "jpeg" ? "image/jpeg" : "image/png", 0.94));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    return format === "png" ? setPngDpi(bytes, 300) : setJpegDpi(bytes, 300);
+  };
+
   const buildExportSource = (width: number, height: number) => {
     const sourceCanvas = document.createElement("canvas");
     sourceCanvas.width = width;
@@ -737,76 +661,84 @@ export default function Home() {
     return source.getImageData(0, 0, width, height);
   };
 
-  const exportNow = (overrides?: { mode?: ExportMode; scale?: 1 | 2 | 3 }) => {
+  const exportNow = async (overrides?: { mode?: ExportMode; scale?: 1 | 2 | 3 }) => {
     if (exportBusy) return;
     const mode = overrides?.mode ?? exportMode;
     const scale = overrides?.scale ?? exportScale;
     setExportMenuOpen(false);
     setExportBusy(true);
+    setExportProgress(0);
     setNotice("指定した出力サイズで、処理を再計算しています…");
-    window.setTimeout(() => {
-      try {
-        const dimensions = exportDimensions(mode, scale);
-        const source = buildExportSource(dimensions.width, dimensions.height);
-        if (!source) throw new Error("source");
-        const enginePlates = plates.map((plate) => ({
-          id: plate.id,
-          inkId: plate.inkId,
-          custom: settings.customMode && settings.screening === "screen" ? { ...defaultCustomScreen, ...(settings.customByPlate[plate.id] ?? {}) } : undefined,
-        }));
-        const result = renderPipeline(source, enginePlates, {
-          screening: settings.screening,
-          angleMode: settings.angleMode,
-          freq: settings.customMode ? defaultCustomScreen.freq : settings.freq,
-          brightness: settings.brightness,
-          contrast: settings.contrast,
-          ink: settings.ink,
-          paperTexture: settings.paperTexture,
-          shift: settings.shift,
-          showPaper: settings.showPaper,
-          paper: activePaper.rgb.map((channel) => channel / 255) as [number, number, number],
-          paperGrainAmount: activePaper.grainAmount,
-          paperGrainScaleMM: activePaper.grainScaleMM,
-          paperFiberAmount: activePaper.fiberAmount,
-          paperInkAcceptanceVariation: activePaper.inkAcceptanceVariation,
-          quality: "export",
-        });
-        const exportCanvas = document.createElement("canvas");
-        exportCanvas.width = dimensions.width;
-        exportCanvas.height = dimensions.height;
-        const exportContext = exportCanvas.getContext("2d");
-        if (!exportContext) throw new Error("canvas");
-        if (mode === "separations") {
-          result.registered.forEach((plateData, index) => {
-            const plateImage = exportContext.createImageData(dimensions.width, dimensions.height);
-            for (let pixel = 0; pixel < plateData.length; pixel += 1) {
-              const value = Math.round((1 - plateData[pixel]) * 255);
-              const offset = pixel * 4;
-              plateImage.data[offset] = value;
-              plateImage.data[offset + 1] = value;
-              plateImage.data[offset + 2] = value;
-              plateImage.data[offset + 3] = 255;
-            }
-            exportContext.putImageData(plateImage, 0, 0);
-            exportCanvas.toBlob((blob) => {
-              if (blob) downloadBlob(blob, `inkloom-plate-${String(index + 1).padStart(2, "0")}-${plates[index].inkId}.png`);
-            }, "image/png");
-          });
-          setNotice(`${plates.length}版の分版PNGを書き出しました（${dimensions.width}×${dimensions.height}px）。`);
-        } else {
-          exportContext.putImageData(result.imageData, 0, 0);
-          exportCanvas.toBlob((blob) => {
-            if (blob) downloadBlob(blob, `inkloom-${printPreset}-${dimensions.width}x${dimensions.height}.${exportFormat}`);
-          }, exportFormat === "jpeg" ? "image/jpeg" : "image/png", exportFormat === "jpeg" ? 0.94 : undefined);
-          setNotice(`${dimensions.width}×${dimensions.height}px / ${dimensions.dpi} DPIで書き出しました。`);
+    try {
+      const dimensions = exportDimensions(mode, scale);
+      const source = buildExportSource(dimensions.width, dimensions.height);
+      if (!source) throw new Error("source");
+      const enginePlates = plates.map((plate) => ({
+        id: plate.id,
+        inkId: plate.inkId,
+        custom: settings.customMode ? { ...defaultCustomScreen, ...(settings.customByPlate[plate.id] ?? {}) } : undefined,
+      }));
+      const stages = mode === "separations"
+        ? enginePlates.map((_plate, plateIndex) => ({ stage: separationStage as RenderStage, plateIndex, key: `plate-${plateIndex}` }))
+        : [{ stage: "composite" as RenderStage, plateIndex: 0, key: "composite" }];
+      const worker = new Worker(new URL("./export.worker.ts", import.meta.url), { type: "module" });
+      exportWorkerRef.current = worker;
+      const outputs = await new Promise<Record<string, { data: Uint8ClampedArray; channels: number }>>((resolve, reject) => {
+        worker.onmessage = (event) => {
+          if (event.data.type === "progress") setExportProgress(event.data.progress);
+          if (event.data.type === "done") resolve(event.data.outputs);
+          if (event.data.type === "cancelled") reject(new DOMException("Cancelled", "AbortError"));
+        };
+        worker.onerror = () => reject(new Error("worker"));
+        worker.postMessage({
+          type: "render",
+          width: dimensions.width,
+          height: dimensions.height,
+          source: source.data,
+          plates: enginePlates,
+          settings: {
+            ...settings,
+            paper: activePaper.rgb.map((channel) => channel / 255) as [number, number, number],
+            paperGrainAmount: activePaper.grainAmount,
+            paperGrainScaleMM: activePaper.grainScaleMM,
+            paperFiberAmount: activePaper.fiberAmount,
+            paperInkAcceptanceVariation: activePaper.inkAcceptanceVariation,
+            quality: "export",
+          },
+          stages,
+        }, [source.data.buffer]);
+      });
+      worker.terminate();
+      exportWorkerRef.current = null;
+      if (mode === "separations") {
+        const files: Record<string, Uint8Array> = {};
+        for (let index = 0; index < enginePlates.length; index += 1) {
+          const output = outputs[`plate-${index}`];
+          files[`plate-${String(index + 1).padStart(2, "0")}-${enginePlates[index].inkId}-${separationStage}.png`] = await canvasBytes(output.data, dimensions.width, dimensions.height, output.channels);
         }
-      } catch {
-        setNotice("書き出しに失敗しました。出力サイズを下げてもう一度お試しください。");
-      } finally {
-        setExportBusy(false);
-        setExportDialogOpen(false);
+        files["README.txt"] = new TextEncoder().encode(`INKLOOM separations\nStage: ${separationStage}\nSize: ${dimensions.width} x ${dimensions.height}px\nResolution: 300 DPI\n`);
+        downloadBlob(new Blob([createZip(files) as BlobPart], { type: "application/zip" }), `inkloom-${separationStage}-${dimensions.width}x${dimensions.height}.zip`);
+        setNotice(`${plates.length}版の${separationStage}を300 DPI PNG／ZIPで書き出しました。`);
+      } else {
+        const output = outputs.composite;
+        const bytes = await canvasBytes(output.data, dimensions.width, dimensions.height, output.channels, exportFormat);
+        downloadBlob(new Blob([bytes as BlobPart], { type: exportFormat === "jpeg" ? "image/jpeg" : "image/png" }), `inkloom-${printPreset}-${dimensions.width}x${dimensions.height}.${exportFormat}`);
+        setNotice(`${dimensions.width}×${dimensions.height}px / 300 DPIで書き出しました。`);
       }
-    }, 40);
+      setExportDialogOpen(false);
+    } catch (error) {
+      setNotice(error instanceof DOMException && error.name === "AbortError" ? "書き出しをキャンセルしました。" : "書き出しに失敗しました。出力サイズを下げてもう一度お試しください。");
+    } finally {
+      exportWorkerRef.current?.terminate();
+      exportWorkerRef.current = null;
+      setExportBusy(false);
+      setExportProgress(0);
+    }
+  };
+
+  const cancelExport = () => {
+    exportWorkerRef.current?.postMessage({ type: "cancel" });
+    setNotice("現在のタイルが終わり次第、書き出しを中止します…");
   };
 
   const quickExport = (scale: 1 | 2 | 3) => {
@@ -917,6 +849,9 @@ export default function Home() {
                 {paperPickerOpen && (
                   <div className="paper-menu" role="menu" aria-label="紙プロファイル">
                     <p>PAPER PROFILE</p>
+                    <button className={!settings.showPaper ? "selected" : ""} onClick={() => { setSettings((current) => ({ ...current, showPaper: false })); setPaperPickerOpen(false); }} role="menuitem">
+                      <i style={{ background: "#fff" }} aria-hidden="true" /><span>Paper Off</span><small>WHITE BASE</small>
+                    </button>
                     {paperProfiles.map((paper) => (
                       <button key={paper.id} className={paperId === paper.id ? "selected" : ""} onClick={() => selectPaper(paper.id)} role="menuitem">
                         <i style={{ background: paper.hex }} aria-hidden="true" />
@@ -931,8 +866,8 @@ export default function Home() {
             <p className="paper-profile-summary"><b>{activePaper.name}</b> · {activePaper.hex} · 粒子 {activePaper.grainAmount * 100}% / 繊維 {activePaper.fiberAmount * 100}%</p>
 
             <div className="custom-mode-bar">
-              <button className={`custom-mode-toggle ${settings.customMode ? "selected" : ""} ${settings.screening === "grain" ? "is-disabled" : ""}`} onClick={toggleCustomMode} aria-pressed={settings.customMode} disabled={settings.screening === "grain"}>
-                <span>▦ CUSTOMIZE</span><small>{settings.customMode ? "ON" : "OFF"}</small>
+              <button className={`custom-mode-toggle ${settings.customMode ? "selected" : ""}`} onClick={toggleCustomMode} aria-pressed={settings.customMode}>
+                <span>▦ PLATE SETTINGS</span><small>{settings.customMode ? "ON" : "OFF"}</small>
               </button>
               {settings.customMode && (
                 <button className="custom-lock" onClick={toggleCustomLock} aria-pressed={settings.customLocked} title={settings.customLocked ? "全インク版へ同期中" : "選択中の版だけを編集"}>
@@ -943,8 +878,8 @@ export default function Home() {
 
             {settings.customMode ? (
               <div className="custom-grid" aria-label="カスタムスクリーン設定">
-                <label className="custom-control custom-control-wide"><span>FREQ <output>{activeCustom.freq} lpi</output></span><input type="range" min="24" max="90" value={activeCustom.freq} onChange={(event) => updateCustomSetting("freq", Number(event.target.value))} /><small>網点のピッチ。ロック中は全版へ同期</small></label>
-                <label className="custom-control"><span>ANGLE <output>{activeCustom.angle}°</output></span><input type="range" min="0" max="90" value={activeCustom.angle} onChange={(event) => updateCustomSetting("angle", Number(event.target.value))} /><small>格子だけの回転角</small></label>
+                {settings.screening === "screen" && <label className="custom-control custom-control-wide"><span>FREQ <output>{activeCustom.freq} lpi</output></span><input type="range" min="24" max="90" value={activeCustom.freq} onChange={(event) => updateCustomSetting("freq", Number(event.target.value))} /><small>網点の細かさ。ロック中は全版へ同期</small></label>}
+                {settings.screening === "screen" && <label className="custom-control"><span>ANGLE <output>{activeCustom.angle}°</output></span><input type="range" min="0" max="90" value={activeCustom.angle} onChange={(event) => updateCustomSetting("angle", Number(event.target.value))} /><small>格子だけの回転角</small></label>}
                 <label className="custom-control"><span>DENSITY <output>{activeCustom.density.toFixed(2)}</output></span><input type="range" min="0.2" max="1.4" step="0.01" value={activeCustom.density} onChange={(event) => updateCustomSetting("density", Number(event.target.value))} /><small>インク量の基準</small></label>
                 <label className="custom-control"><span>OPACITY <output>{activeCustom.opacity.toFixed(2)}</output></span><input type="range" min="0.2" max="1" step="0.01" value={activeCustom.opacity} onChange={(event) => updateCustomSetting("opacity", Number(event.target.value))} /><small>重なりの濃さ</small></label>
                 <label className="custom-control"><span>DOT GAIN <output>{activeCustom.dotGain.toFixed(2)}</output></span><input type="range" min="0" max="0.45" step="0.01" value={activeCustom.dotGain} onChange={(event) => updateCustomSetting("dotGain", Number(event.target.value))} /><small>濃部での点の膨らみ</small></label>
@@ -960,8 +895,9 @@ export default function Home() {
               <label className={`tone-control ${settings.screening === "grain" ? "is-disabled" : ""}`}>
                 <span>FREQ <output>{settings.freq} lpi</output></span>
                 <input type="range" min="24" max="90" value={settings.freq} disabled={settings.screening === "grain"} onChange={(event) => updateSetting("freq", Number(event.target.value))} />
-                <small>網点の細かさ（小さいほど細かい）</small>
+                <small>網点の細かさ（大きいほど細かい）</small>
               </label>
+              {settings.screening === "grain" && <label className="tone-control"><span>GRAIN SIZE <output>{settings.grainSizeMM.toFixed(2)} mm</output></span><input type="range" min="0.15" max="1.2" step="0.01" value={settings.grainSizeMM} onChange={(event) => updateSetting("grainSizeMM", Number(event.target.value))} /><small>点描粒子の物理サイズ</small></label>}
               <label className={`tone-control ${settings.screening === "grain" ? "is-disabled" : ""}`}>
                 <span>ANGLE <output>{angleLabels[settings.angleMode]}</output></span>
                 <select value={settings.angleMode} disabled={settings.screening === "grain"} onChange={(event) => setAngleMode(event.target.value as AngleMode)} aria-label="スクリーン角度方式">
@@ -983,7 +919,7 @@ export default function Home() {
               </label>
             </div>
             )}
-            <p className="tone-help">{settings.customMode ? "CUSTOMIZEは版ごとの網点を直接調整します。角度を変えても、元画像のマスク範囲は固定されます。" : settings.screening === "screen" ? "SCREENは格子状のドット。像の形は固定したまま、版ごとに格子だけを回転させます。濃い部分ほど点が大きくなり、FREQで全体の細かさを変えます。" : "GRAINは点描のカケアミ。像の形に沿って点の密度で濃淡を表現し、Brightness / Contrastだけが使えます。"}</p>
+            <p className="tone-help">{settings.customMode ? "PLATE SETTINGSは濃度・不透明度・ドットゲイン・版ズレを版ごとに調整します。SCREENでは周波数と角度も設定できます。" : settings.screening === "screen" ? "SCREENは格子状のドット。像の形は固定したまま、版ごとに格子だけを回転させます。濃い部分ほど点が大きくなり、FREQが大きいほど細かくなります。" : "GRAINは点描のカケアミ。GRAIN SIZEで粒径を決め、版の濃度・不透明度・版ズレはPLATE SETTINGSから編集できます。"}</p>
           </div>
 
           <div className="control-section sliders">
@@ -1024,6 +960,12 @@ export default function Home() {
 
         <section className="preview-panel" aria-label="仕上がりプレビュー">
           <div className="print-meta"><span>LIVE PROOF / {frameRatio === "original" ? "ORIG" : frameRatio === "sqrt2" ? "√2" : frameRatio} / {String(plates.length).padStart(2, "0")} COLORS</span><span>{plates.map((plate) => inkById[plate.inkId].name).join(" + ")}</span></div>
+          <div className="stage-inspector">
+            <select value={previewStage} onChange={(event) => setPreviewStage(event.target.value as RenderStage)} aria-label="表示する処理工程">
+              <option value="original">ORIGINAL</option><option value="tone">TONE</option><option value="gamut">GAMUT</option><option value="coverage">COVERAGE</option><option value="master">MASTER</option><option value="printed">PRINTED</option><option value="registered">REGISTERED</option><option value="composite">COMPOSITE</option>
+            </select>
+            {(["coverage", "master", "printed", "registered"] as RenderStage[]).includes(previewStage) && <select value={previewPlateIndex} onChange={(event) => setPreviewPlateIndex(Number(event.target.value))} aria-label="表示するインク版">{plates.map((plate, index) => <option key={plate.id} value={index}>PLATE {index + 1} / {inkById[plate.inkId].name}</option>)}</select>}
+          </div>
           <div className={`paper-stage ${previewZoom === "fit" ? "is-fit" : "is-zoomed"}`}>
             <div className="preview-zoom" role="group" aria-label="プレビューの表示倍率">
               <button className={previewZoom === "fit" ? "selected" : ""} onClick={() => setPreviewZoom("fit")} aria-pressed={previewZoom === "fit"}>FIT</button>
@@ -1082,8 +1024,10 @@ export default function Home() {
               {exportMode === "image" && <label>SCALE<select value={exportScale} onChange={(event) => setExportScale(Number(event.target.value) as 1 | 2 | 3)}><option value="1">1×（長辺 1,600px）</option><option value="2">2×（長辺 3,200px）</option><option value="3">3×（長辺 4,800px）</option></select></label>}
               {exportMode !== "image" && <label>SIZE<select value={printPreset} onChange={(event) => setPrintPreset(event.target.value as "A6" | "A5" | "A4")}><option value="A6">A6 / 105 × 148 mm</option><option value="A5">A5 / 148 × 210 mm</option><option value="A4">A4 / 210 × 297 mm</option></select></label>}
               {exportMode !== "separations" && <label>FORMAT<select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}><option value="png">PNG</option><option value="jpeg">JPG</option></select></label>}
+              {exportMode === "separations" && <label>PLATE DATA<select value={separationStage} onChange={(event) => setSeparationStage(event.target.value as SeparationStage)}><option value="coverage">連続階調版 / Coverage</option><option value="master">網点マスター / Master</option><option value="registered">印刷シミュレーション版 / Registered</option></select></label>}
             </div>
-            <div className="export-actions"><button onClick={() => setExportDialogOpen(false)}>キャンセル</button><button className="primary" onClick={exportNow} disabled={exportBusy}>{exportBusy ? "処理中…" : "EXPORT"}</button></div>
+            {exportBusy && <div className="export-progress"><span style={{ width: `${exportProgress}%` }} /><output>{exportProgress}%</output></div>}
+            <div className="export-actions"><button onClick={exportBusy ? cancelExport : () => setExportDialogOpen(false)}>{exportBusy ? "処理を中止" : "キャンセル"}</button><button className="primary" onClick={() => exportNow()} disabled={exportBusy}>{exportBusy ? "処理中…" : "EXPORT"}</button></div>
           </section>
         </div>
       )}

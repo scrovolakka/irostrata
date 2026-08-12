@@ -10,6 +10,7 @@
 - `AUTO` による画像の主要色を基にしたインク候補の自動選択
 - 印刷色の吸収と紙色を考慮した、OKLabベースの多色分解
 - `SCREEN`（格子状網点）と `GRAIN`（点描）の2つの階調表現
+- GRAIN専用の物理粒径設定と、両モード共通の版別濃度・不透明度・版ズレ調整
 - Dot on Dot / Offset / Rosette のスクリーン角度方式
 - 版ごとの周波数、角度、濃度、ドットゲイン、版ズレ、ワープなどを調整する `CUSTOMIZE` モード
 - Warm White / Natural / Recycled Gray / Kraft / White の紙プロファイル
@@ -17,6 +18,9 @@
 - 組み込みの印刷レシピ8種と、ブラウザ内へ保存できる名前付きプリセット
 - フレーム比率、CROP / FIT、プレビュー倍率（FIT / 100% / 200% / 300%）
 - PNG / JPGの完成画像、または各インク版の分版PNGを書き出し
+- Original / Tone / Gamut / Coverage / Master / Printed / Registered / Composite の中間工程表示
+- 連続階調版、網点マスター、印刷シミュレーション版のZIP一括書き出し
+- 300 DPIメタデータ、Worker＋タイル処理、進捗表示、キャンセル
 
 ## 紙プロファイル
 
@@ -60,7 +64,7 @@ input image
   → preview or export
 ```
 
-プレビューと書き出しは同じ処理パイプラインを使います。元画像のピクセル寸法ではなく、選択したフレーム比率と出力サイズで再描画します。
+プレビューと書き出しは同じ処理パイプラインを使います。元画像のピクセル寸法ではなく、選択したフレーム比率と出力サイズで再描画します。高解像度出力はWorkerでストリップ単位に処理し、すべての版の全中間バッファを一度に保持しない構成です。
 
 ## プリセットの保存について
 
@@ -70,6 +74,8 @@ input image
 
 - `app/page.tsx` — 編集UI、画像入力、プリセット、エクスポート
 - `app/engine.ts` — 色分解、網点化、紙・印刷・合成処理
+- `app/export.worker.ts` — 高解像度のタイルレンダーと進捗通知
+- `app/export-utils.ts` — ZIP生成とPNG/JPEGの300 DPIメタデータ
 - `app/globals.css` — 印刷ラボ風のUIスタイル
 - `tests/rendered-html.test.mjs` — レンダリングのスモークテスト
 

@@ -140,6 +140,9 @@ h1 em { color: #7d7b75; font-style: normal; font-weight: 400; }
 .export-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 18px; }
 .export-actions button { height: 29px; padding: 0 10px; border: 1px solid #4a4741; color: #d9d3c8; background: #282724; font-family: "DM Mono", monospace; font-size: 8px; }
 .export-actions button.primary { color: #171717; border-color: var(--pink); background: var(--pink); }
+.export-progress { position: relative; height: 18px; margin-top: 15px; overflow: hidden; border: 1px solid #403e39; background: #121212; }
+.export-progress span { position: absolute; inset: 0 auto 0 0; background: var(--pink); transition: width .15s linear; }
+.export-progress output { position: absolute; inset: 0 6px 0 auto; display: flex; align-items: center; color: #f4efe6; font-family: "DM Mono", monospace; font-size: 7px; mix-blend-mode: difference; }
 .preset-overlay { position: fixed; inset: 0; z-index: 50; overflow: auto; padding: 18px; background: rgba(10,10,10,.96); }
 .preset-gallery { width: min(1120px, 100%); margin: 0 auto; padding: 8px 0 38px; }
 .preset-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 0 14px; border-bottom: 1px solid #302f2b; }
@@ -188,6 +191,8 @@ input[type="range"]::-moz-range-thumb { width: 7px; height: 12px; border: 1px so
 .reset:hover { color: #e4e1d7; border-color: #e4e1d7; }
 .mobile-download { display: none; }
 .preview-panel { order: 1; position: relative; display: flex; min-width: 0; flex-direction: column; padding: 15px 18px 0; background: #101010; }
+.stage-inspector { position: absolute; z-index: 5; top: 39px; left: 29px; display: flex; gap: 4px; }
+.stage-inspector select { height: 24px; padding: 0 7px; border: 1px solid #494741; color: #d8d3ca; background: rgba(22,22,21,.94); font-family: "DM Mono", monospace; font-size: 7px; box-shadow: 0 4px 12px rgba(0,0,0,.28); }
 .print-meta, .proof-footer { display: flex; justify-content: space-between; align-items: center; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .04em; }
 .print-meta { height: 16px; margin-bottom: 8px; color: #74736e; }
 .print-meta span:last-child { color: var(--pink); }

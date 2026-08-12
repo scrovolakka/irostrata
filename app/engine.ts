@@ -26,6 +26,7 @@ export type EngineSettings = {
   screening: "screen" | "grain";
   angleMode: "dot" | "offset" | "rosette";
   freq: number;
+  grainSizeMM?: number;
   brightness: number;
   contrast: number;
   ink: number;
@@ -33,12 +34,22 @@ export type EngineSettings = {
   shift: number;
   showPaper: boolean;
   paper?: [number, number, number];
-  /** Paper profile values. Amounts are stored as 0–1 fractions. */
   paperGrainAmount?: number;
   paperGrainScaleMM?: number;
   paperFiberAmount?: number;
   paperInkAcceptanceVariation?: number;
   quality?: "preview" | "export";
+  /** Global coordinates make independently rendered strips seam-free. */
+  originX?: number;
+  originY?: number;
+  fullWidth?: number;
+  fullHeight?: number;
+  /** Reused by tiled export so a quantized source colour is solved once. */
+  separationCache?: Map<number, number[]>;
+  coverageOverride?: Float32Array[];
+  masterOverride?: Float32Array[];
+  printedOverride?: Float32Array[];
+  registeredOverride?: Float32Array[];
 };
 
 export type RenderResult = {
@@ -51,15 +62,17 @@ export type RenderResult = {
   registered: Float32Array[];
 };
 
+export type RenderStage = "original" | "tone" | "gamut" | "coverage" | "master" | "printed" | "registered" | "composite";
+
 function clamp(value: number, min = 0, max = 1) {
   return Math.max(min, Math.min(max, value));
 }
 
-function srgbToLinear(value: number) {
+export function srgbToLinear(value: number) {
   return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
 }
 
-function linearToSrgb(value: number) {
+export function linearToSrgb(value: number) {
   const c = clamp(value);
   return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
 }
@@ -106,12 +119,13 @@ function absorptionFromHex(hex: string): [number, number, number] {
 }
 
 const catalogHex: Record<string, string> = {
-  black: "#000000",
+  black: "#171717",
   blue: "#0078bf",
   fluorescentPink: "#ff48b0",
   green: "#00a95c",
   orange: "#ff6c2f",
-  red: "#f15060",
+  red: "#ff665e",
+  brightRed: "#f15060",
   yellow: "#ffe800",
   teal: "#00838a",
   purple: "#765ba7",
@@ -151,86 +165,128 @@ function sampleBilinear(buffer: Float32Array, width: number, height: number, x: 
   return top * (1 - ty) + bottom * ty;
 }
 
-function separate(source: ImageData, profiles: EngineInk[], paperLinear: [number, number, number], settings: EngineSettings) {
-  const { width, height, data } = source;
-  const maps = profiles.map(() => new Float32Array(width * height));
-  const linear = new Float32Array(width * height * 3);
-  const contrast = 1 + settings.contrast / 100;
-  const brightness = settings.brightness / 100;
+function scoreCoverage(candidate: number[], target: [number, number, number], profiles: EngineInk[], strengths: number[], paperLinear: [number, number, number]) {
+  const predicted = [paperLinear[0], paperLinear[1], paperLinear[2]];
+  candidate.forEach((coverage, index) => {
+    const absorption = profiles[index].absorption;
+    for (let channel = 0; channel < 3; channel += 1) predicted[channel] *= Math.exp(-absorption[channel] * coverage * strengths[index]);
+  });
+  const candidateLab = oklab(predicted[0], predicted[1], predicted[2]);
+  const dl = target[0] - candidateLab[0];
+  const da = target[1] - candidateLab[1];
+  const db = target[2] - candidateLab[2];
+  return dl * dl + da * da + db * db;
+}
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const pixel = y * width + x;
-      const offset = pixel * 4;
-      for (let channel = 0; channel < 3; channel += 1) {
-        const input = srgbToLinear(data[offset + channel] / 255);
-        linear[pixel * 3 + channel] = clamp((input - 0.5) * contrast + 0.5 + brightness);
+function solveCoverage(target: [number, number, number], profiles: EngineInk[], strengths: number[], maxInk: number, quality: EngineSettings["quality"]) {
+  if (profiles.length <= 2) {
+    // Two plates can be searched globally. 41 export levels match the observed
+    // tone ceiling while the colour cache keeps the per-pixel cost bounded.
+    const levels = quality === "export" ? 41 : 17;
+    const best = profiles.map(() => 0);
+    let bestScore = Number.POSITIVE_INFINITY;
+    const secondLevels = profiles.length === 2 ? levels : 1;
+    for (let a = 0; a < levels; a += 1) {
+      for (let b = 0; b < secondLevels; b += 1) {
+        const candidate = profiles.length === 2 ? [(a / (levels - 1)) * maxInk, (b / (levels - 1)) * maxInk] : [(a / (levels - 1)) * maxInk];
+        const score = scoreCoverage(candidate, target, profiles, strengths, paperLinearPlaceholder);
+        if (score < bestScore) {
+          bestScore = score;
+          candidate.forEach((value, index) => { best[index] = value; });
+        }
       }
     }
+    return best;
   }
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const pixel = y * width + x;
-      const r = linear[pixel * 3];
-      const g = linear[pixel * 3 + 1];
-      const b = linear[pixel * 3 + 2];
-      const target = oklab(r, g, b);
-      const levels = settings.quality === "export" ? (profiles.length > 2 ? 5 : 7) : 5;
-      const values = profiles.map(() => 0);
-      const score = (candidate: number[]) => {
-        const predicted = [paperLinear[0], paperLinear[1], paperLinear[2]];
-        candidate.forEach((coverage, index) => {
-          const absorption = profiles[index].absorption;
-          for (let channel = 0; channel < 3; channel += 1) predicted[channel] *= Math.exp(-absorption[channel] * coverage);
-        });
-        const candidateLab = oklab(predicted[0], predicted[1], predicted[2]);
-        const dl = target[0] - candidateLab[0];
-        const da = target[1] - candidateLab[1];
-        const db = target[2] - candidateLab[2];
-        return dl * dl + da * da + db * db;
-      };
-      // Coordinate descent keeps the preview responsive for six plates while
-      // retaining the same joint absorption model as tone's exhaustive search.
-      let bestScore = score(values);
-      for (let pass = 0; pass < (settings.quality === "export" ? 2 : 1); pass += 1) {
-        profiles.forEach((_profile, index) => {
-          let local = values[index];
-          let localScore = bestScore;
-          for (let level = 0; level < levels; level += 1) {
-            const candidate = level / (levels - 1);
-            values[index] = candidate;
-            const candidateScore = score(values);
-            if (candidateScore < localScore) {
-              local = candidate;
-              localScore = candidateScore;
-            }
+  return [];
+}
+
+// The solver receives paper through this short-lived binding to keep its hot
+// inner loop allocation-free. renderPipeline is synchronous, so it is safe.
+let paperLinearPlaceholder: [number, number, number] = [1, 1, 1];
+
+function solveMultiInk(target: [number, number, number], profiles: EngineInk[], strengths: number[], maxInk: number, quality: EngineSettings["quality"]) {
+  const levels = quality === "export" ? 13 : 9;
+  const starts = [profiles.map(() => 0), profiles.map(() => maxInk * 0.45), profiles.map(() => maxInk)];
+  let best = starts[0].slice();
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const start of starts) {
+    const values = start.slice();
+    let currentScore = scoreCoverage(values, target, profiles, strengths, paperLinearPlaceholder);
+    for (let pass = 0; pass < (quality === "export" ? 4 : 2); pass += 1) {
+      const order = Array.from({ length: profiles.length }, (_, index) => pass % 2 === 0 ? index : profiles.length - 1 - index);
+      for (const index of order) {
+        let localValue = values[index];
+        let localScore = currentScore;
+        for (let level = 0; level < levels; level += 1) {
+          values[index] = (level / (levels - 1)) * maxInk;
+          const score = scoreCoverage(values, target, profiles, strengths, paperLinearPlaceholder);
+          if (score < localScore) {
+            localScore = score;
+            localValue = values[index];
           }
-          values[index] = local;
-          bestScore = localScore;
-        });
+        }
+        values[index] = localValue;
+        currentScore = localScore;
       }
-      values.forEach((value, index) => {
-        maps[index][pixel] = value * (settings.ink / 100);
-      });
     }
+    if (currentScore < bestScore) {
+      bestScore = currentScore;
+      best = values.slice();
+    }
+  }
+  return best;
+}
+
+function separate(source: ImageData, profiles: EngineInk[], plates: EnginePlate[], paperLinear: [number, number, number], settings: EngineSettings) {
+  const { width, height, data } = source;
+  const maps = profiles.map(() => new Float32Array(width * height));
+  const contrast = 1 + settings.contrast / 100;
+  const brightness = settings.brightness / 100;
+  const maxInk = clamp(settings.ink / 100);
+  const cache = settings.separationCache ?? new Map<number, number[]>();
+  const strengths = plates.map((plate) => (plate.custom?.density ?? 1) * (plate.custom?.opacity ?? 0.7));
+  paperLinearPlaceholder = paperLinear;
+
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const offset = pixel * 4;
+    const linear = [0, 1, 2].map((channel) => {
+      const input = srgbToLinear(data[offset + channel] / 255);
+      return clamp((input - 0.5) * contrast + 0.5 + brightness);
+    }) as [number, number, number];
+    const qr = Math.round(linear[0] * 31);
+    const qg = Math.round(linear[1] * 31);
+    const qb = Math.round(linear[2] * 31);
+    const key = (qr << 10) | (qg << 5) | qb;
+    let values = cache.get(key);
+    if (!values) {
+      const target = oklab(qr / 31, qg / 31, qb / 31);
+      values = profiles.length <= 2
+        ? solveCoverage(target, profiles, strengths, maxInk, settings.quality)
+        : solveMultiInk(target, profiles, strengths, maxInk, settings.quality);
+      cache.set(key, values);
+    }
+    values.forEach((value, index) => { maps[index][pixel] = value; });
   }
   return maps;
 }
 
 export function renderPipeline(source: ImageData, plates: EnginePlate[], settings: EngineSettings): RenderResult {
-  const paperSRGB = settings.paper ?? [0.945, 0.933, 0.894];
+  const paperSRGB = settings.showPaper ? settings.paper ?? [0.945, 0.933, 0.894] : [1, 1, 1] as [number, number, number];
   const paperLinear = paperSRGB.map(srgbToLinear) as [number, number, number];
   const profiles = plates.map((plate) => engineInkCatalog[plate.inkId] ?? engineInkCatalog.black);
-  const coverage = separate(source, profiles, paperLinear, settings);
+  const coverage = settings.coverageOverride ?? separate(source, profiles, plates, paperLinear, settings);
   const { width, height } = source;
   const total = width * height;
-  const master = profiles.map(() => new Float32Array(total));
-  const printed = profiles.map(() => new Float32Array(total));
-  const registered = profiles.map(() => new Float32Array(total));
+  const master = settings.masterOverride ?? profiles.map(() => new Float32Array(total));
+  const printed = settings.printedOverride ?? profiles.map(() => new Float32Array(total));
+  const registered = settings.registeredOverride ?? profiles.map(() => new Float32Array(total));
   const outputDPI = 300;
-  // `paperTexture` is the user's overall strength control. Individual paper
-  // profiles still define the material response used by separation and print.
+  const originX = settings.originX ?? 0;
+  const originY = settings.originY ?? 0;
+  const fullWidth = settings.fullWidth ?? width;
+  const fullHeight = settings.fullHeight ?? height;
   const paperStrength = settings.showPaper ? settings.paperTexture / 100 : 0;
   const paperAcceptance = (settings.paperInkAcceptanceVariation ?? 0.08) * paperStrength;
   const paperGrain = (settings.paperGrainAmount ?? 0.05) * paperStrength;
@@ -240,29 +296,29 @@ export function renderPipeline(source: ImageData, plates: EnginePlate[], setting
   for (let plateIndex = 0; plateIndex < profiles.length; plateIndex += 1) {
     const plate = plates[plateIndex];
     const custom = plate.custom ?? {};
-    const freq = custom.freq ?? settings.freq;
-    // LPI is a physical output unit. The preview and export use the same
-    // period in pixels at the target DPI, regardless of preview dimensions.
-    const period = Math.max(1, outputDPI / Math.max(freq, 1));
+    const screenPeriod = Math.max(1, outputDPI / Math.max(custom.freq ?? settings.freq, 1));
+    const grainPeriod = Math.max(1, ((settings.grainSizeMM ?? 0.45) * outputDPI) / 25.4);
+    const period = settings.screening === "grain" ? grainPeriod : screenPeriod;
     const angle = ((custom.angle ?? screenAngle(settings.angleMode, plateIndex)) * Math.PI) / 180;
     const cosine = Math.cos(angle);
     const sine = Math.sin(angle);
     const dotGain = custom.dotGain ?? 0.16;
-    const density = custom.density ?? 1;
     const offsetX = ((custom.offsetX ?? 0) * outputDPI) / 25.4 + (plateIndex % 2 === 0 ? -settings.shift : settings.shift);
     const offsetY = ((custom.offsetY ?? 0) * outputDPI) / 25.4;
     const rotation = ((custom.rotation ?? 0) * Math.PI) / 180;
     const coverageMap = coverage[plateIndex];
-    for (let y = 0; y < height; y += 1) {
+    if (!settings.masterOverride) for (let y = 0; y < height; y += 1) {
+      const gy = y + originY;
       for (let x = 0; x < width; x += 1) {
+        const gx = x + originX;
         const pixel = y * width + x;
-        const value = sampleBilinear(coverageMap, width, height, x, y) * density;
+        const value = coverageMap[pixel];
         if (settings.screening === "grain") {
-          const threshold = clamp((1 - dotGain) * (0.2 + valueNoise(x / Math.max(period, 1), y / Math.max(period, 1), 41 + plate.id)));
+          const threshold = clamp((1 - dotGain) * (0.2 + valueNoise(gx / period, gy / period, 41 + plate.id)));
           master[plateIndex][pixel] = value >= threshold ? 1 : 0;
         } else {
-          const u = cosine * (x - width / 2) - sine * (y - height / 2);
-          const v = sine * (x - width / 2) + cosine * (y - height / 2);
+          const u = cosine * (gx - fullWidth / 2) - sine * (gy - fullHeight / 2);
+          const v = sine * (gx - fullWidth / 2) + cosine * (gy - fullHeight / 2);
           const cellU = (u / period - Math.floor(u / period) - 0.5) * period;
           const cellV = (v / period - Math.floor(v / period) - 0.5) * period;
           const distance = Math.hypot(cellU, cellV);
@@ -273,13 +329,13 @@ export function renderPipeline(source: ImageData, plates: EnginePlate[], setting
       }
     }
 
-    for (let y = 0; y < height; y += 1) {
+    if (!settings.printedOverride) for (let y = 0; y < height; y += 1) {
+      const gy = y + originY;
       for (let x = 0; x < width; x += 1) {
+        const gx = x + originX;
         const pixel = y * width + x;
-        const coarse = valueNoise(x / Math.max(paperScalePx * 5, 1), y / Math.max(paperScalePx * 5, 1), 91 + plate.id);
-        const fine = valueNoise(x / Math.max(period, 1), y / Math.max(period, 1), 151 + plate.id);
-        // Paper acceptance is centered around the nominal ink density. It
-        // therefore makes an ink plate uneven without globally darkening it.
+        const coarse = valueNoise(gx / Math.max(paperScalePx * 5, 1), gy / Math.max(paperScalePx * 5, 1), 91 + plate.id);
+        const fine = valueNoise(gx / period, gy / period, 151 + plate.id);
         const acceptance = 1 + (coarse - 0.5) * paperAcceptance;
         const densityVar = custom.densityVar ?? 0;
         const grainAmount = custom.edgeGrain ?? paperGrain;
@@ -287,38 +343,38 @@ export function renderPipeline(source: ImageData, plates: EnginePlate[], setting
       }
     }
 
-    const centerX = width / 2;
-    const centerY = height / 2;
+    const centerX = fullWidth / 2;
+    const centerY = fullHeight / 2;
     const warpPx = ((custom.warp ?? 0) * outputDPI) / 25.4;
-    for (let y = 0; y < height; y += 1) {
+    if (!settings.registeredOverride) for (let y = 0; y < height; y += 1) {
+      const gy = y + originY;
       for (let x = 0; x < width; x += 1) {
-        const noiseX = (valueNoise(x / Math.max(width / 4, 1), y / Math.max(height / 4, 1), 201 + plate.id) - 0.5) * warpPx;
-        const noiseY = (valueNoise(x / Math.max(width / 4, 1), y / Math.max(height / 4, 1), 251 + plate.id) - 0.5) * warpPx;
-        const localX = x - centerX - offsetX + noiseX;
-        const localY = y - centerY - offsetY + noiseY;
-        const rotatedX = Math.cos(rotation) * localX + Math.sin(rotation) * localY + centerX;
-        const rotatedY = -Math.sin(rotation) * localX + Math.cos(rotation) * localY + centerY;
-        registered[plateIndex][y * width + x] = sampleBilinear(printed[plateIndex], width, height, rotatedX, rotatedY);
+        const gx = x + originX;
+        const noiseX = (valueNoise(gx / Math.max(fullWidth / 4, 1), gy / Math.max(fullHeight / 4, 1), 201 + plate.id) - 0.5) * warpPx;
+        const noiseY = (valueNoise(gx / Math.max(fullWidth / 4, 1), gy / Math.max(fullHeight / 4, 1), 251 + plate.id) - 0.5) * warpPx;
+        const localX = gx - centerX - offsetX + noiseX;
+        const localY = gy - centerY - offsetY + noiseY;
+        const sampleGlobalX = Math.cos(rotation) * localX + Math.sin(rotation) * localY + centerX;
+        const sampleGlobalY = -Math.sin(rotation) * localX + Math.cos(rotation) * localY + centerY;
+        registered[plateIndex][y * width + x] = sampleBilinear(printed[plateIndex], width, height, sampleGlobalX - originX, sampleGlobalY - originY);
       }
     }
   }
 
   const imageData = new ImageData(width, height);
-  const opacity = plates.map((plate) => plate.custom?.opacity ?? 0.7);
+  const strengths = plates.map((plate) => (plate.custom?.density ?? 1) * (plate.custom?.opacity ?? 0.7));
   for (let pixel = 0; pixel < total; pixel += 1) {
-    const result = [paperLinear[0], paperLinear[1], paperLinear[2]];
-    if (!settings.showPaper) result[0] = result[1] = result[2] = 1;
-    profiles.forEach((profile, index) => {
-      const coverageValue = registered[index][pixel] * opacity[index];
-      for (let channel = 0; channel < 3; channel += 1) result[channel] *= Math.exp(-profile.absorption[channel] * coverageValue);
-    });
     const x = pixel % width;
     const y = Math.floor(pixel / width);
-    // Coarse luminance noise represents paper grain. Fibres are deliberately
-    // anisotropic and contribute at 30% of their profile amount, matching the
-    // material weighting observed in the reference app.
-    const grainNoise = valueNoise(x / paperScalePx, y / paperScalePx, 701) - 0.5;
-    const fiberNoise = valueNoise(x / Math.max(paperScalePx * 0.38, 1), y / Math.max(paperScalePx * 3.8, 1), 719) - 0.5;
+    const gx = x + originX;
+    const gy = y + originY;
+    const result = settings.showPaper ? [paperLinear[0], paperLinear[1], paperLinear[2]] : [1, 1, 1];
+    profiles.forEach((profile, index) => {
+      const coverageValue = registered[index][pixel] * strengths[index];
+      for (let channel = 0; channel < 3; channel += 1) result[channel] *= Math.exp(-profile.absorption[channel] * coverageValue);
+    });
+    const grainNoise = valueNoise(gx / paperScalePx, gy / paperScalePx, 701) - 0.5;
+    const fiberNoise = valueNoise(gx / Math.max(paperScalePx * 0.38, 1), gy / Math.max(paperScalePx * 3.8, 1), 719) - 0.5;
     const paperNoise = settings.showPaper ? grainNoise * paperGrain + fiberNoise * paperFiber * paperGrain * 0.3 : 0;
     const offset = pixel * 4;
     imageData.data[offset] = Math.round(clamp(linearToSrgb(result[0] + paperNoise)) * 255);
@@ -327,4 +383,51 @@ export function renderPipeline(source: ImageData, plates: EnginePlate[], setting
     imageData.data[offset + 3] = 255;
   }
   return { width, height, imageData, coverage, master, printed, registered };
+}
+
+function continuousComposite(result: RenderResult, plates: EnginePlate[], settings: EngineSettings) {
+  const paperSRGB = settings.showPaper ? settings.paper ?? [0.945, 0.933, 0.894] : [1, 1, 1];
+  const paperLinear = paperSRGB.map(srgbToLinear) as [number, number, number];
+  const profiles = plates.map((plate) => engineInkCatalog[plate.inkId] ?? engineInkCatalog.black);
+  const image = new ImageData(result.width, result.height);
+  for (let pixel = 0; pixel < result.width * result.height; pixel += 1) {
+    const value = [...paperLinear];
+    profiles.forEach((profile, index) => {
+      const amount = result.coverage[index][pixel] * (plates[index].custom?.density ?? 1) * (plates[index].custom?.opacity ?? 0.7);
+      for (let channel = 0; channel < 3; channel += 1) value[channel] *= Math.exp(-profile.absorption[channel] * amount);
+    });
+    const offset = pixel * 4;
+    image.data[offset] = Math.round(linearToSrgb(value[0]) * 255);
+    image.data[offset + 1] = Math.round(linearToSrgb(value[1]) * 255);
+    image.data[offset + 2] = Math.round(linearToSrgb(value[2]) * 255);
+    image.data[offset + 3] = 255;
+  }
+  return image;
+}
+
+export function renderStageImage(result: RenderResult, source: ImageData, plates: EnginePlate[], settings: EngineSettings, stage: RenderStage, plateIndex = 0) {
+  if (stage === "original") return new ImageData(new Uint8ClampedArray(source.data), source.width, source.height);
+  if (stage === "composite") return result.imageData;
+  const tone = stage === "tone" || stage === "gamut" ? continuousComposite(result, plates, settings) : null;
+  if (stage === "tone" && tone) return tone;
+  const image = new ImageData(result.width, result.height);
+  if (stage === "gamut" && tone) {
+    for (let offset = 0; offset < image.data.length; offset += 4) {
+      const difference = (Math.abs(source.data[offset] - tone.data[offset]) + Math.abs(source.data[offset + 1] - tone.data[offset + 1]) + Math.abs(source.data[offset + 2] - tone.data[offset + 2])) / 765;
+      image.data[offset] = Math.round(245 * difference);
+      image.data[offset + 1] = Math.round(64 * difference);
+      image.data[offset + 2] = Math.round(110 * difference);
+      image.data[offset + 3] = 255;
+    }
+    return image;
+  }
+  const maps = stage === "coverage" ? result.coverage : stage === "master" ? result.master : stage === "printed" ? result.printed : result.registered;
+  const map = maps[Math.max(0, Math.min(maps.length - 1, plateIndex))];
+  for (let pixel = 0; pixel < map.length; pixel += 1) {
+    const gray = Math.round((1 - clamp(map[pixel])) * 255);
+    const offset = pixel * 4;
+    image.data[offset] = image.data[offset + 1] = image.data[offset + 2] = gray;
+    image.data[offset + 3] = 255;
+  }
+  return image;
 }

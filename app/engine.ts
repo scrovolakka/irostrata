@@ -38,7 +38,7 @@ export type EngineSettings = {
   paperGrainScaleMM?: number;
   paperFiberAmount?: number;
   paperInkAcceptanceVariation?: number;
-  quality?: "preview" | "export";
+  quality?: "preview" | "video" | "export";
   /** Global coordinates make independently rendered strips seam-free. */
   originX?: number;
   originY?: number;
@@ -182,7 +182,7 @@ function solveCoverage(target: [number, number, number], profiles: EngineInk[], 
   if (profiles.length <= 2) {
     // Two plates can be searched globally. 41 export levels match the observed
     // tone ceiling while the colour cache keeps the per-pixel cost bounded.
-    const levels = quality === "export" ? 41 : 17;
+    const levels = quality === "export" ? 41 : quality === "video" ? 9 : 17;
     const best = profiles.map(() => 0);
     let bestScore = Number.POSITIVE_INFINITY;
     const secondLevels = profiles.length === 2 ? levels : 1;
@@ -207,14 +207,16 @@ function solveCoverage(target: [number, number, number], profiles: EngineInk[], 
 let paperLinearPlaceholder: [number, number, number] = [1, 1, 1];
 
 function solveMultiInk(target: [number, number, number], profiles: EngineInk[], strengths: number[], maxInk: number, quality: EngineSettings["quality"]) {
-  const levels = quality === "export" ? 13 : 9;
-  const starts = [profiles.map(() => 0), profiles.map(() => maxInk * 0.45), profiles.map(() => maxInk)];
+  const levels = quality === "export" ? 13 : quality === "video" ? 5 : 9;
+  const starts = quality === "video"
+    ? [profiles.map(() => 0), profiles.map(() => maxInk * 0.55)]
+    : [profiles.map(() => 0), profiles.map(() => maxInk * 0.45), profiles.map(() => maxInk)];
   let best = starts[0].slice();
   let bestScore = Number.POSITIVE_INFINITY;
   for (const start of starts) {
     const values = start.slice();
     let currentScore = scoreCoverage(values, target, profiles, strengths, paperLinearPlaceholder);
-    for (let pass = 0; pass < (quality === "export" ? 4 : 2); pass += 1) {
+    for (let pass = 0; pass < (quality === "export" ? 4 : quality === "video" ? 1 : 2); pass += 1) {
       const order = Array.from({ length: profiles.length }, (_, index) => pass % 2 === 0 ? index : profiles.length - 1 - index);
       for (const index of order) {
         let localValue = values[index];
@@ -255,13 +257,17 @@ function separate(source: ImageData, profiles: EngineInk[], plates: EnginePlate[
       const input = srgbToLinear(data[offset + channel] / 255);
       return clamp((input - 0.5) * contrast + 0.5 + brightness);
     }) as [number, number, number];
-    const qr = Math.round(linear[0] * 31);
-    const qg = Math.round(linear[1] * 31);
-    const qb = Math.round(linear[2] * 31);
+    // Video deliberately shares a smaller colour cube between frames. The
+    // following halftone stage masks the tiny loss while avoiding a full
+    // still-image colour solve for every moving frame.
+    const quantizationMaximum = settings.quality === "video" ? 15 : 31;
+    const qr = Math.round(linear[0] * quantizationMaximum);
+    const qg = Math.round(linear[1] * quantizationMaximum);
+    const qb = Math.round(linear[2] * quantizationMaximum);
     const key = (qr << 10) | (qg << 5) | qb;
     let values = cache.get(key);
     if (!values) {
-      const target = oklab(qr / 31, qg / 31, qb / 31);
+      const target = oklab(qr / quantizationMaximum, qg / quantizationMaximum, qb / quantizationMaximum);
       values = profiles.length <= 2
         ? solveCoverage(target, profiles, strengths, maxInk, settings.quality)
         : solveMultiInk(target, profiles, strengths, maxInk, settings.quality);

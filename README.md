@@ -1,6 +1,6 @@
 # IROSTRATA
 
-IROSTRATA is a browser-based image lab that separates images into multiple risograph-style ink plates. Adjust halftones, paper texture, and registration, then export the result—all without uploading the source image to a server. Processing happens locally in the browser with Canvas.
+IROSTRATA is a browser-based image lab that separates images and video frames into multiple risograph-style ink plates. Adjust halftones, paper texture, and registration, then export the result—all without uploading the source media to a server. Processing happens locally in the browser with Canvas.
 
 > IROSTRATA does not attempt to reproduce physical risograph printing or the output of any specific application exactly. It is a production-oriented simulator inspired by print color separation, halftone screening, and paper texture.
 
@@ -24,6 +24,8 @@ IROSTRATA is a browser-based image lab that separates images into multiple risog
 - Export continuous-tone plates, halftone masters, or simulated printed plates together as a ZIP archive
 - 300 DPI metadata, worker-based tiled rendering, progress reporting, and cancellation
 - English, Japanese, and Juicetopian interfaces with a persistent language switcher
+- Local video input with processed playback, timeline scrubbing, and the same frame-ratio controls as still images
+- Silent MP4/H.264 or WebM/VP9/VP8 video export at 480px or 720px and 6, 12, or 24 fps
 
 ## Localization
 
@@ -93,6 +95,8 @@ input image
 
 Preview and export use the same processing pipeline. The image is redrawn according to the selected frame ratio and output size rather than the source image's pixel dimensions. High-resolution exports are processed in strips by a Worker so the app does not retain every intermediate buffer for every plate at once.
 
+Video frames use the same paper, plate, screening, registration, and subtractive-composite stages. A smaller color-search grid is shared across frames to keep browser-only video processing practical. Video export currently contains no audio; support and speed depend on the codecs exposed by the current browser and device.
+
 ## Preset Storage
 
 Presets saved from `PRESET` include inks, paper, screening, custom plate settings, and frame settings. They are stored in the current browser's `localStorage`. Source images are never saved.
@@ -100,11 +104,12 @@ Presets saved from `PRESET` include inks, paper, screening, custom plate setting
 ## Project Structure
 
 - `app/page.tsx` — static route
-- `app/studio.tsx` — editor UI, image input, presets, and export
+- `app/studio.tsx` — editor UI, image/video input, presets, and export
 - `app/i18n.ts` — English, Japanese, and Juicetopian dictionaries and locale helpers
 - `app/engine.ts` — color separation, screening, paper simulation, printing, and compositing
 - `app/export.worker.ts` — high-resolution tiled rendering and progress reporting
 - `app/export-utils.ts` — ZIP generation and 300 DPI metadata for PNG and JPEG
+- `lib/video-export.mjs` — video dimension, frame-count, and transport-time helpers
 - `app/globals.css` — print-lab interface styles
 - `tests/rendered-html.test.mjs` — rendering smoke tests
 
@@ -114,9 +119,11 @@ Presets saved from `PRESET` include inks, paper, screening, custom plate setting
 - Vinext / Vite
 - TypeScript
 - Canvas 2D
+- Mediabunny / WebCodecs for local video encoding and containers
 - Tailwind CSS 4
 
 ## Development Notes
 
 - High-resolution, multicolor, and separation exports can be computationally expensive in the browser. Reduce the output size or number of ink plates if processing takes too long.
+- Video export is intentionally silent in the first release. Longer clips, higher frame rates, 720px output, and additional ink plates require proportionally more processing time and memory.
 - Presets are stored locally per browser. They do not sync between devices or browsers.

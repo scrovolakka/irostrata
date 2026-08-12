@@ -3,6 +3,7 @@
 import { ChangeEvent, CSSProperties, DragEvent, useCallback, useEffect, useRef, useState } from "react";
 import { renderPipeline, renderStageImage, type RenderStage } from "./engine";
 import { calculateWorkSize } from "../lib/render-size.mjs";
+import { calculateVideoFrameCount, calculateVideoSize, formatVideoTime } from "../lib/video-export.mjs";
 import { normalizePresetState } from "../lib/preset-state.mjs";
 import { createRandomRecipe } from "../lib/random-recipe";
 import { createZip, setJpegDpi, setPngDpi } from "./export-utils";
@@ -26,6 +27,8 @@ type ScreeningMode = "screen" | "grain";
 type AngleMode = "dot" | "offset" | "rosette";
 type ExportMode = "image" | "print" | "separations";
 type ExportFormat = "png" | "jpeg";
+type SourceKind = "sample" | "image" | "video";
+type VideoExportFormat = "mp4" | "webm";
 type SeparationStage = "coverage" | "master" | "registered";
 type FrameRatio = "original" | "1:1" | "4:5" | "3:4" | "2:3" | "9:16" | "sqrt2";
 type PaperId = "warmWhite" | "natural" | "recycledGray" | "kraft" | "white";
@@ -257,11 +260,16 @@ export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoFileRef = useRef<File | null>(null);
+  const videoExportAbortRef = useRef(false);
+  const videoExportActiveRef = useRef(false);
   const objectUrlRef = useRef<string | null>(null);
   const exportWorkerRef = useRef<Worker | null>(null);
   const originalPreviewRef = useRef<ImageData | null>(null);
   const processedPreviewRef = useRef<ImageData | null>(null);
   const originalHeldRef = useRef(false);
+  const videoSeparationCacheRef = useRef<{ key: string; map: Map<number, number[]> } | null>(null);
   const previewPipelineCacheRef = useRef<{ separationKey: string; screenKey: string; printKey: string; registrationKey: string; result: ReturnType<typeof renderPipeline> } | null>(null);
   const localeMountedRef = useRef(false);
   const nextPlateIdRef = useRef(3);
@@ -269,7 +277,9 @@ export default function Home() {
   const [activePlateId, setActivePlateId] = useState(1);
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [locale, setLocale] = useState<Locale>("en");
+  const [sourceKind, setSourceKind] = useState<SourceKind>("sample");
   const [imageState, setImageState] = useState<{ name: string; ready: boolean; revision: number }>({ name: "", ready: true, revision: 0 });
+  const [videoState, setVideoState] = useState({ duration: 0, width: 0, height: 0, currentTime: 0, playing: false });
   const [isDragging, setIsDragging] = useState(false);
   const [notice, setNotice] = useState<NoticeState>({ key: "notice.ready" });
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -279,6 +289,9 @@ export default function Home() {
   const [exportScale, setExportScale] = useState<1 | 2 | 3>(1);
   const [exportMode, setExportMode] = useState<ExportMode>("image");
   const [exportFormat, setExportFormat] = useState<ExportFormat>("png");
+  const [videoExportFormat, setVideoExportFormat] = useState<VideoExportFormat>("mp4");
+  const [videoExportEdge, setVideoExportEdge] = useState<480 | 720>(480);
+  const [videoExportFps, setVideoExportFps] = useState<6 | 12 | 24>(12);
   const [separationStage, setSeparationStage] = useState<SeparationStage>("coverage");
   const [printPreset, setPrintPreset] = useState<"A6" | "A5" | "A4">("A4");
   const [frameRatio, setFrameRatio] = useState<FrameRatio>("4:5");
@@ -305,12 +318,16 @@ export default function Home() {
     if (!canvas) return;
 
     const image = imageRef.current;
+    const video = videoRef.current;
+    const visualSource = sourceKind === "video" && videoState.width > 0 ? video : image;
     const frameRatios: Record<Exclude<FrameRatio, "original">, number> = { "1:1": 1, "4:5": 4 / 5, "3:4": 3 / 4, "2:3": 2 / 3, "9:16": 9 / 16, sqrt2: 1 / Math.SQRT2 };
-    const sourceRatio = frameRatio === "original" ? (image ? image.naturalWidth / image.naturalHeight : 4 / 3) : frameRatios[frameRatio];
+    const naturalWidth = sourceKind === "video" ? videoState.width : image?.naturalWidth;
+    const naturalHeight = sourceKind === "video" ? videoState.height : image?.naturalHeight;
+    const sourceRatio = frameRatio === "original" ? (naturalWidth && naturalHeight ? naturalWidth / naturalHeight : 4 / 3) : frameRatios[frameRatio];
     // The working canvas is bounded by total pixels and edge length, never by
     // a minimum height. This keeps panoramic and very tall frames at exactly
     // the same aspect ratio as the preview/export frame.
-    const { width, height } = calculateWorkSize(sourceRatio);
+    const { width, height } = calculateWorkSize(sourceRatio, sourceKind === "video" ? { maxPixels: 180000, maxEdge: 640 } : undefined);
     canvas.width = width;
     canvas.height = height;
     setPreviewCanvasSize((current) => current.width === width && current.height === height ? current : { width, height });
@@ -325,11 +342,11 @@ export default function Home() {
     source.fillStyle = activePaper.hex;
     source.fillRect(0, 0, width, height);
 
-    if (image) {
-      const scale = (frameFit === "cover" ? Math.max : Math.min)(width / image.naturalWidth, height / image.naturalHeight);
-      const imageWidth = image.naturalWidth * scale;
-      const imageHeight = image.naturalHeight * scale;
-      source.drawImage(image, (width - imageWidth) / 2, (height - imageHeight) / 2, imageWidth, imageHeight);
+    if (visualSource && naturalWidth && naturalHeight) {
+      const scale = (frameFit === "cover" ? Math.max : Math.min)(width / naturalWidth, height / naturalHeight);
+      const imageWidth = naturalWidth * scale;
+      const imageHeight = naturalHeight * scale;
+      source.drawImage(visualSource, (width - imageWidth) / 2, (height - imageHeight) / 2, imageWidth, imageHeight);
     } else {
       drawSample(source, width, height);
     }
@@ -346,6 +363,10 @@ export default function Home() {
     const printKey = [screenKey, settings.showPaper, settings.paperTexture, paperId, enginePlates.map((plate) => `${plate.custom?.edgeGrain ?? ""}:${plate.custom?.densityVar ?? ""}`).join("|")].join(":");
     const registrationKey = [printKey, settings.shift, enginePlates.map((plate) => `${plate.custom?.warp ?? ""}:${plate.custom?.offsetX ?? ""}:${plate.custom?.offsetY ?? ""}:${plate.custom?.rotation ?? ""}`).join("|")].join(":");
     const cached = previewPipelineCacheRef.current;
+    const videoSeparationKey = [paperId, settings.showPaper, plateSignature, settings.brightness, settings.contrast, settings.ink].join(":");
+    if (sourceKind === "video" && videoSeparationCacheRef.current?.key !== videoSeparationKey) {
+      videoSeparationCacheRef.current = { key: videoSeparationKey, map: new Map() };
+    }
     const result = renderPipeline(sourceImage, enginePlates, {
       screening: settings.screening,
       angleMode: settings.angleMode,
@@ -362,6 +383,8 @@ export default function Home() {
       paperGrainScaleMM: activePaper.grainScaleMM,
       paperFiberAmount: activePaper.fiberAmount,
       paperInkAcceptanceVariation: activePaper.inkAcceptanceVariation,
+      quality: sourceKind === "video" ? "video" : "preview",
+      separationCache: sourceKind === "video" ? videoSeparationCacheRef.current?.map : undefined,
       coverageOverride: cached?.separationKey === separationKey ? cached.result.coverage : undefined,
       masterOverride: cached?.screenKey === screenKey ? cached.result.master : undefined,
       printedOverride: cached?.printKey === printKey ? cached.result.printed : undefined,
@@ -377,11 +400,29 @@ export default function Home() {
     originalPreviewRef.current = sourceImage;
     processedPreviewRef.current = processedPreview;
     ctx.putImageData(originalHeldRef.current ? sourceImage : processedPreview, 0, 0);
-  }, [activePaper, frameFit, frameRatio, imageState.revision, paperId, plates, previewPlateIndex, previewStage, settings]);
+  }, [activePaper, frameFit, frameRatio, imageState.revision, paperId, plates, previewPlateIndex, previewStage, settings, sourceKind, videoState.height, videoState.width]);
 
   useEffect(() => {
     drawArtwork();
   }, [drawArtwork, imageState.revision]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || sourceKind !== "video" || !videoState.playing) return;
+    let animationFrame = 0;
+    let lastRendered = 0;
+    const tick = (time: number) => {
+      if (time - lastRendered >= 1000 / 12) {
+        lastRendered = time;
+        previewPipelineCacheRef.current = null;
+        setImageState((current) => ({ ...current, revision: current.revision + 1 }));
+        setVideoState((current) => ({ ...current, currentTime: video.currentTime, playing: !video.paused && !video.ended }));
+      }
+      if (!video.paused && !video.ended) animationFrame = requestAnimationFrame(tick);
+    };
+    animationFrame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animationFrame);
+  }, [sourceKind, videoState.playing]);
 
   useEffect(() => {
     if (!localeMountedRef.current) {
@@ -402,6 +443,7 @@ export default function Home() {
   useEffect(() => () => {
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
     exportWorkerRef.current?.terminate();
+    videoExportAbortRef.current = true;
   }, []);
 
   useEffect(() => {
@@ -429,13 +471,31 @@ export default function Home() {
 
   const loadFile = (file?: File) => {
     if (!file) return;
-    if (!file.type.startsWith("image/")) {
+    if (!file.type.startsWith("image/") && !file.type.startsWith("video/")) {
       notify("notice.invalidFile");
       return;
     }
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
     const url = URL.createObjectURL(file);
     objectUrlRef.current = url;
+    if (file.type.startsWith("video/")) {
+      imageRef.current = null;
+      videoFileRef.current = file;
+      setSourceKind("video");
+      setFrameRatio("original");
+      setVideoState({ duration: 0, width: 0, height: 0, currentTime: 0, playing: false });
+      setImageState((current) => ({ name: file.name, ready: false, revision: current.revision + 1 }));
+      queueMicrotask(() => {
+        const video = videoRef.current;
+        if (!video) return;
+        video.src = url;
+        video.load();
+      });
+      return;
+    }
+    videoRef.current?.pause();
+    videoFileRef.current = null;
+    setSourceKind("image");
     const image = new Image();
     image.onload = () => {
       imageRef.current = image;
@@ -446,6 +506,48 @@ export default function Home() {
     };
     image.onerror = () => notify("notice.loadFailed");
     image.src = url;
+  };
+
+  const onVideoReady = () => {
+    const video = videoRef.current;
+    if (!video || !Number.isFinite(video.duration)) return;
+    setVideoState({ duration: video.duration, width: video.videoWidth, height: video.videoHeight, currentTime: video.currentTime, playing: false });
+    setImageState((current) => ({ ...current, ready: true, revision: current.revision + 1 }));
+    notify("notice.videoLoaded", { duration: formatVideoTime(video.duration) });
+  };
+
+  const onVideoError = () => {
+    setImageState((current) => ({ ...current, ready: false }));
+    notify("notice.videoLoadFailed");
+  };
+
+  const toggleVideoPlayback = async () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused || video.ended) {
+      if (video.ended) video.currentTime = 0;
+      await video.play();
+    } else {
+      video.pause();
+    }
+    setVideoState((current) => ({ ...current, currentTime: video.currentTime, playing: !video.paused && !video.ended }));
+  };
+
+  const seekVideo = (time: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.pause();
+    video.currentTime = time;
+    setVideoState((current) => ({ ...current, currentTime: time, playing: false }));
+  };
+
+  const onVideoSeeked = () => {
+    if (videoExportActiveRef.current) return;
+    const video = videoRef.current;
+    if (!video) return;
+    previewPipelineCacheRef.current = null;
+    setVideoState((current) => ({ ...current, currentTime: video.currentTime, playing: !video.paused && !video.ended }));
+    setImageState((current) => ({ ...current, revision: current.revision + 1 }));
   };
 
   const onFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -586,7 +688,9 @@ export default function Home() {
 
   const autoSelectInks = () => {
     const image = imageRef.current;
-    if (!image) {
+    const video = videoRef.current;
+    const visualSource = sourceKind === "video" ? video : image;
+    if (!visualSource) {
       const sampleOrder: InkId[] = ["fluorescentPink", "blue", "yellow", "green", "orange", "black"];
       setPlates((current) => current.map((plate, index) => ({ ...plate, inkId: sampleOrder[index] })));
       notify("notice.autoSample");
@@ -598,7 +702,7 @@ export default function Home() {
     analysisCanvas.height = 72;
     const analysis = analysisCanvas.getContext("2d", { willReadFrequently: true });
     if (!analysis) return;
-    analysis.drawImage(image, 0, 0, 72, 72);
+    analysis.drawImage(visualSource, 0, 0, 72, 72);
     const pixels = analysis.getImageData(0, 0, 72, 72).data;
     const hueBins = Array.from({ length: 24 }, (_, index) => ({ hue: index * 15 + 7.5, score: 0 }));
 
@@ -681,7 +785,10 @@ export default function Home() {
   };
 
   const frameRatioValue = () => {
-    if (frameRatio === "original") return imageRef.current ? imageRef.current.naturalWidth / imageRef.current.naturalHeight : 4 / 3;
+    if (frameRatio === "original") {
+      if (sourceKind === "video" && videoState.width && videoState.height) return videoState.width / videoState.height;
+      return imageRef.current ? imageRef.current.naturalWidth / imageRef.current.naturalHeight : 4 / 3;
+    }
     return ({ "1:1": 1, "4:5": 4 / 5, "3:4": 3 / 4, "2:3": 2 / 3, "9:16": 9 / 16, sqrt2: 1 / Math.SQRT2 } as Record<Exclude<FrameRatio, "original">, number>)[frameRatio];
   };
 
@@ -739,11 +846,15 @@ export default function Home() {
     source.fillStyle = activePaper.hex;
     source.fillRect(0, 0, width, height);
     const image = imageRef.current;
-    if (image) {
-      const scale = (frameFit === "cover" ? Math.max : Math.min)(width / image.naturalWidth, height / image.naturalHeight);
-      const imageWidth = image.naturalWidth * scale;
-      const imageHeight = image.naturalHeight * scale;
-      source.drawImage(image, (width - imageWidth) / 2, (height - imageHeight) / 2, imageWidth, imageHeight);
+    const video = videoRef.current;
+    const visualSource = sourceKind === "video" ? video : image;
+    const naturalWidth = sourceKind === "video" ? videoState.width : image?.naturalWidth;
+    const naturalHeight = sourceKind === "video" ? videoState.height : image?.naturalHeight;
+    if (visualSource && naturalWidth && naturalHeight) {
+      const scale = (frameFit === "cover" ? Math.max : Math.min)(width / naturalWidth, height / naturalHeight);
+      const imageWidth = naturalWidth * scale;
+      const imageHeight = naturalHeight * scale;
+      source.drawImage(visualSource, (width - imageWidth) / 2, (height - imageHeight) / 2, imageWidth, imageHeight);
     } else {
       drawSample(source, width, height);
     }
@@ -828,6 +939,7 @@ export default function Home() {
   };
 
   const cancelExport = () => {
+    videoExportAbortRef.current = true;
     exportWorkerRef.current?.postMessage({ type: "cancel" });
     notify("notice.exportStopping");
   };
@@ -836,6 +948,124 @@ export default function Home() {
     setExportScale(scale);
     setExportMode("image");
     window.setTimeout(() => exportNow({ mode: "image", scale }), 0);
+  };
+
+  const exportVideo = async () => {
+    const file = videoFileRef.current;
+    const video = videoRef.current;
+    if (!file || !video || !videoState.duration || exportBusy) return;
+    video.pause();
+    setVideoState((current) => ({ ...current, playing: false }));
+    setExportBusy(true);
+    setExportProgress(0);
+    videoExportAbortRef.current = false;
+    videoExportActiveRef.current = true;
+    notify("notice.videoExporting");
+
+    let output: import("mediabunny").Output | null = null;
+    try {
+      const { BufferTarget, CanvasSource, Mp4OutputFormat, Output, Quality, WebMOutputFormat, canEncodeVideo } = await import("mediabunny");
+      const size = calculateVideoSize(frameRatioValue(), videoExportEdge);
+      const codec = videoExportFormat === "mp4" ? "avc" : await canEncodeVideo("vp9", { width: size.width, height: size.height }) ? "vp9" : "vp8";
+      if (!await canEncodeVideo(codec, { width: size.width, height: size.height })) {
+        notify("notice.videoUnsupported");
+        return;
+      }
+
+      const target = new BufferTarget();
+      output = new Output({
+        format: videoExportFormat === "mp4" ? new Mp4OutputFormat({ fastStart: "in-memory" }) : new WebMOutputFormat(),
+        target,
+      });
+      const renderCanvas = document.createElement("canvas");
+      renderCanvas.width = size.width;
+      renderCanvas.height = size.height;
+      const renderContext = renderCanvas.getContext("2d");
+      if (!renderContext) throw new Error("video canvas");
+      const source = new CanvasSource(renderCanvas, {
+        codec,
+        quality: new Quality("high"),
+        keyFrameInterval: 2,
+        latencyMode: "quality",
+      });
+      const frameCount = calculateVideoFrameCount(videoState.duration, videoExportFps);
+      output.addVideoTrack(source, { frameRate: videoExportFps, maximumPacketCount: frameCount });
+      output.setMetadataTags({ title: `IROSTRATA — ${file.name}` });
+      await output.start();
+
+      const enginePlates = plates.map((plate) => ({
+        id: plate.id,
+        inkId: plate.inkId,
+        custom: settings.customMode ? { ...defaultCustomScreen, ...(settings.customByPlate[plate.id] ?? {}) } : undefined,
+      }));
+      const frameDuration = 1 / videoExportFps;
+      const frameSource = document.createElement("canvas");
+      frameSource.width = size.width;
+      frameSource.height = size.height;
+      const frameContext = frameSource.getContext("2d", { willReadFrequently: true });
+      if (!frameContext) throw new Error("video source canvas");
+      const separationCache = new Map<number, number[]>();
+
+      for (let index = 0; index < frameCount; index += 1) {
+        if (videoExportAbortRef.current) throw new DOMException("Cancelled", "AbortError");
+        const timestamp = Math.min(index * frameDuration, Math.max(0, videoState.duration - 0.001));
+        if (Math.abs(video.currentTime - timestamp) > 0.0005) {
+          await new Promise<void>((resolve, reject) => {
+            const cleanup = () => {
+              video.removeEventListener("seeked", onSeeked);
+              video.removeEventListener("error", onError);
+            };
+            const onSeeked = () => { cleanup(); resolve(); };
+            const onError = () => { cleanup(); reject(new Error("video seek")); };
+            video.addEventListener("seeked", onSeeked, { once: true });
+            video.addEventListener("error", onError, { once: true });
+            video.currentTime = timestamp;
+          });
+        }
+
+        frameContext.fillStyle = activePaper.hex;
+        frameContext.fillRect(0, 0, size.width, size.height);
+        const scale = (frameFit === "cover" ? Math.max : Math.min)(size.width / videoState.width, size.height / videoState.height);
+        const sourceWidth = videoState.width * scale;
+        const sourceHeight = videoState.height * scale;
+        frameContext.drawImage(video, (size.width - sourceWidth) / 2, (size.height - sourceHeight) / 2, sourceWidth, sourceHeight);
+        const sourceImage = frameContext.getImageData(0, 0, size.width, size.height);
+        const result = renderPipeline(sourceImage, enginePlates, {
+          ...settings,
+          paper: activePaper.rgb.map((channel) => channel / 255) as [number, number, number],
+          paperGrainAmount: activePaper.grainAmount,
+          paperGrainScaleMM: activePaper.grainScaleMM,
+          paperFiberAmount: activePaper.fiberAmount,
+          paperInkAcceptanceVariation: activePaper.inkAcceptanceVariation,
+          quality: "video",
+          separationCache,
+        });
+        renderContext.putImageData(result.imageData, 0, 0);
+        await source.add(index * frameDuration, frameDuration, { keyFrame: index % Math.max(1, videoExportFps * 2) === 0 });
+        setExportProgress(Math.round(((index + 1) / frameCount) * 100));
+        if (index % 2 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+
+      await output.finalize();
+      output = null;
+      if (!target.buffer) throw new Error("video output");
+      const mimeType = videoExportFormat === "mp4" ? "video/mp4" : "video/webm";
+      downloadBlob(new Blob([target.buffer], { type: mimeType }), `irostrata-${size.width}x${size.height}-${videoExportFps}fps.${videoExportFormat}`);
+      notify("notice.videoDone", { width: size.width, height: size.height, fps: videoExportFps, format: videoExportFormat.toUpperCase() });
+      setExportDialogOpen(false);
+    } catch (error) {
+      await output?.cancel().catch(() => undefined);
+      console.error("[IROSTRATA video export]", error);
+      notify(error instanceof DOMException && error.name === "AbortError" ? "notice.exportCancelled" : "notice.exportFailed");
+    } finally {
+      videoExportActiveRef.current = false;
+      video.currentTime = 0;
+      setVideoState((current) => ({ ...current, currentTime: 0, playing: false }));
+      setImageState((current) => ({ ...current, revision: current.revision + 1 }));
+      setExportBusy(false);
+      setExportProgress(0);
+      videoExportAbortRef.current = false;
+    }
   };
 
   const activePlate = plates.find((plate) => plate.id === activePlateId) ?? plates[0];
@@ -876,7 +1106,8 @@ export default function Home() {
             <p className="intro">{t("source.intro")}</p>
           </div>
 
-          <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/*" onChange={onFileChange} />
+          <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/*,video/*" onChange={onFileChange} />
+          <video ref={videoRef} className="source-video" muted playsInline preload="auto" aria-label={t("source.videoAria")} onLoadedData={onVideoReady} onSeeked={onVideoSeeked} onEnded={() => setVideoState((current) => ({ ...current, currentTime: current.duration, playing: false }))} onError={onVideoError} />
           <button
             className={`upload-zone ${isDragging ? "is-dragging" : ""}`}
             onClick={() => fileInputRef.current?.click()}
@@ -887,10 +1118,17 @@ export default function Home() {
             aria-label={t("source.aria")}
           >
             <span className="upload-icon" aria-hidden="true">↑</span>
-            <span><strong>{t("source.addPhoto")}</strong><small>{t("source.drop")}</small></span>
-            <span className="file-type">JPG · PNG · WEBP</span>
+            <span><strong>{t("source.addMedia")}</strong><small>{t("source.drop")}</small></span>
+            <span className="file-type">IMAGE · MP4 · MOV · WEBM</span>
           </button>
           <p className="source-name"><span>●</span> {imageState.name || t("source.sample")}</p>
+          {sourceKind === "video" && videoState.duration > 0 && (
+            <div className="video-transport">
+              <button onClick={toggleVideoPlayback}>{videoState.playing ? t("video.pause") : t("video.play")}</button>
+              <input type="range" min="0" max={videoState.duration} step="0.01" value={videoState.currentTime} onChange={(event) => seekVideo(Number(event.target.value))} aria-label={t("video.timeline")} />
+              <output>{formatVideoTime(videoState.currentTime)} / {formatVideoTime(videoState.duration)}</output>
+            </div>
+          )}
 
           <div className="ink-editor">
             <div className="section-label"><span>{t("ink.layers")}</span><small>{t("ink.colors", { count: plates.length })}</small></div>
@@ -1133,8 +1371,16 @@ export default function Home() {
       {exportDialogOpen && (
         <div className="export-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setExportDialogOpen(false); }}>
           <section className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title">
-            <h2 id="export-title">{t("export.heading")}</h2>
-            <p>{t("export.intro")}</p>
+            <h2 id="export-title">{t(sourceKind === "video" ? "export.videoHeading" : "export.heading")}</h2>
+            <p>{t(sourceKind === "video" ? "export.videoIntro" : "export.intro")}</p>
+            {sourceKind === "video" ? (
+              <div className="export-options">
+                <label>{t("export.videoResolution")}<select value={videoExportEdge} onChange={(event) => setVideoExportEdge(Number(event.target.value) as 480 | 720)}><option value="480">480px</option><option value="720">720px</option></select></label>
+                <label>{t("export.videoFrameRate")}<select value={videoExportFps} onChange={(event) => setVideoExportFps(Number(event.target.value) as 6 | 12 | 24)}><option value="6">6 fps</option><option value="12">12 fps</option><option value="24">24 fps</option></select></label>
+                <label>{t("export.videoFormat")}<select value={videoExportFormat} onChange={(event) => setVideoExportFormat(event.target.value as VideoExportFormat)}><option value="mp4">MP4 / H.264</option><option value="webm">WebM / VP9 · VP8</option></select></label>
+                <p className="video-export-estimate">{t("export.videoEstimate", { frames: calculateVideoFrameCount(videoState.duration, videoExportFps), duration: formatVideoTime(videoState.duration) })}</p>
+              </div>
+            ) : (
             <div className="export-options">
               <label>{t("export.mode")}<select value={exportMode} onChange={(event) => setExportMode(event.target.value as ExportMode)}><option value="image">{t("export.modeImage")}</option><option value="print">{t("export.modePrint")}</option><option value="separations">{t("export.modeSeparations")}</option></select></label>
               {exportMode === "image" && <label>{t("export.scale")}<select value={exportScale} onChange={(event) => setExportScale(Number(event.target.value) as 1 | 2 | 3)}><option value="1">{t("export.quick1")}</option><option value="2">{t("export.quick2")}</option><option value="3">{t("export.quick3")}</option></select></label>}
@@ -1142,8 +1388,9 @@ export default function Home() {
               {exportMode !== "separations" && <label>{t("export.format")}<select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)}><option value="png">PNG</option><option value="jpeg">JPG</option></select></label>}
               {exportMode === "separations" && <label>{t("export.plateData")}<select value={separationStage} onChange={(event) => setSeparationStage(event.target.value as SeparationStage)}><option value="coverage">{t("export.continuous")}</option><option value="master">{t("export.master")}</option><option value="registered">{t("export.registered")}</option></select></label>}
             </div>
+            )}
             {exportBusy && <div className="export-progress"><span style={{ width: `${exportProgress}%` }} /><output>{exportProgress}%</output></div>}
-            <div className="export-actions"><button onClick={exportBusy ? cancelExport : () => setExportDialogOpen(false)}>{exportBusy ? t("action.stop") : t("action.cancel")}</button><button className="primary" onClick={() => exportNow()} disabled={exportBusy}>{exportBusy ? t("action.processing") : t("action.export")}</button></div>
+            <div className="export-actions"><button onClick={exportBusy ? cancelExport : () => setExportDialogOpen(false)}>{exportBusy ? t("action.stop") : t("action.cancel")}</button><button className="primary" onClick={sourceKind === "video" ? exportVideo : () => exportNow()} disabled={exportBusy}>{exportBusy ? t("action.processing") : t("action.export")}</button></div>
           </section>
         </div>
       )}

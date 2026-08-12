@@ -2,6 +2,7 @@
 
 import { ChangeEvent, CSSProperties, DragEvent, useCallback, useEffect, useRef, useState } from "react";
 import { renderPipeline } from "./engine";
+import { calculateWorkSize } from "../lib/render-size.mjs";
 
 type InkId = "black" | "blue" | "fluorescentPink" | "green" | "orange" | "red" | "yellow" | "burgundy" | "teal" | "purple" | "brown" | "slate" | "mediumBlue" | "violet" | "cornflower" | "sunflower";
 
@@ -281,10 +282,10 @@ export default function Home() {
     const image = imageRef.current;
     const frameRatios: Record<Exclude<FrameRatio, "original">, number> = { "1:1": 1, "4:5": 4 / 5, "3:4": 3 / 4, "2:3": 2 / 3, "9:16": 9 / 16, sqrt2: 1 / Math.SQRT2 };
     const sourceRatio = frameRatio === "original" ? (image ? image.naturalWidth / image.naturalHeight : 4 / 3) : frameRatios[frameRatio];
-    // Render the proof at a stable, detailed resolution. Zoom affects only
-    // its display scale, so inspection never changes the generated artwork.
-    const width = 720;
-    const height = Math.max(280, Math.round(width / sourceRatio));
+    // The working canvas is bounded by total pixels and edge length, never by
+    // a minimum height. This keeps panoramic and very tall frames at exactly
+    // the same aspect ratio as the preview/export frame.
+    const { width, height } = calculateWorkSize(sourceRatio);
     canvas.width = width;
     canvas.height = height;
     setPreviewCanvasSize((current) => current.width === width && current.height === height ? current : { width, height });

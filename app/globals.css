@@ -72,6 +72,13 @@ h1 em { color: #7d7b75; font-style: normal; font-weight: 400; }
 .palette-help { margin: 0; padding: 7px 17px 9px; border-top: 1px solid #292929; color: #77756f; font-size: 8px; line-height: 1.45; }
 .palette-help b { color: #b2afa7; font-family: "DM Mono", monospace; font-size: 7px; font-weight: 500; }
 .ink-tab-select:focus-visible, .ink-tab-remove:focus-visible, .add-ink:focus-visible, .auto-ink:focus-visible, .ink-swatch:focus-visible { position: relative; z-index: 2; outline: 2px solid #f2efe6; outline-offset: -2px; }
+.randomize-all { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 35px; margin: 12px 0 0; padding: 0 9px; border: 1px solid #3b3935; color: #d5d1c8; background: #1c1c1b; font-family: "DM Mono", monospace; text-align: left; transition: color .15s, border-color .15s, background .15s; }
+.randomize-all span { display: inline-flex; align-items: center; gap: 7px; font-size: 8px; letter-spacing: .05em; }
+.randomize-all i { color: var(--pink); font-size: 13px; font-style: normal; }
+.randomize-all small { color: #66645e; font-size: 6px; letter-spacing: .04em; }
+.randomize-all:hover { color: #171717; border-color: var(--pink); background: var(--pink); }
+.randomize-all:hover i, .randomize-all:hover small { color: #171717; }
+.randomize-all:focus-visible { outline: 2px solid #f1eee5; outline-offset: 2px; }
 .tone-controls { margin-top: 0; padding: 14px 17px 15px; border-top: 0; border-bottom: 1px solid var(--line-soft); }
 .tone-mode-row { display: flex; gap: 5px; margin-top: 10px; }
 .tone-mode { height: 29px; padding: 0 9px; border: 1px solid #303030; color: #85837c; background: #1c1c1c; font-family: "DM Mono", monospace; font-size: 8px; letter-spacing: .03em; }
@@ -203,6 +210,12 @@ input[type="range"]::-moz-range-thumb { width: 7px; height: 12px; border: 1px so
 .paper-stage::after { right: 10px; bottom: 10px; border-right: 1px solid; border-bottom: 1px solid; }
 canvas { position: relative; z-index: 1; display: block; max-width: min(81vw, 790px); max-height: calc(100vh - 157px); width: auto; height: auto; border: 1px solid rgba(220,215,203,.25); box-shadow: 0 0 0 1px #080808, 0 12px 38px rgba(0,0,0,.5); image-rendering: auto; }
 .paper-stage.is-zoomed canvas { max-width: none; max-height: none; }
+.original-compare { position: absolute; z-index: 4; bottom: 11px; left: 11px; display: flex; align-items: center; gap: 8px; height: 23px; padding: 0 7px; border: 1px solid #494741; color: #aaa79f; background: rgba(22,22,21,.92); box-shadow: 0 4px 12px rgba(0,0,0,.28); font-family: "DM Mono", monospace; font-size: 7px; letter-spacing: .04em; touch-action: none; user-select: none; -webkit-user-select: none; }
+.original-compare small { color: #66645f; font-size: 6px; }
+.original-compare:hover { color: #eee9df; border-color: #88847b; }
+.original-compare.is-held { color: #171717; border-color: var(--pink); background: var(--pink); }
+.original-compare.is-held small { color: #171717; }
+.original-compare:focus-visible { outline: 2px solid #f1eee5; outline-offset: 2px; }
 .preview-zoom { position: absolute; z-index: 4; top: 11px; right: 11px; display: flex; overflow: hidden; border: 1px solid #494741; background: rgba(22,22,21,.92); box-shadow: 0 4px 12px rgba(0,0,0,.28); }
 .preview-zoom button { height: 22px; padding: 0 7px; border: 0; border-right: 1px solid #3e3d38; color: #89867d; background: transparent; font-family: "DM Mono", monospace; font-size: 7px; }
 .preview-zoom button:last-child { border-right: 0; }
@@ -269,6 +282,7 @@ footer { display: none; }
   .stage-inspector select { flex: 0 0 auto; height: 34px; padding: 0 9px; font-size: 8px; }
   .preview-zoom { top: auto; right: 8px; bottom: 8px; }
   .preview-zoom button { min-width: 42px; height: 34px; padding: 0 7px; font-size: 8px; }
+  .original-compare { bottom: 8px; left: 8px; height: 34px; padding: 0 9px; font-size: 8px; }
   .proof-footer { min-height: 29px; gap: 8px; }
   .proof-footer p { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
   .proof-footer span { flex: 0 0 auto; }
@@ -292,6 +306,9 @@ footer { display: none; }
   .auto-ink { flex-basis: 40px; height: 40px; scroll-snap-align: start; }
   .ink-swatch { flex-basis: 36px; width: 36px; height: 40px; padding: 3px; scroll-snap-align: start; }
   .palette-help { padding: 9px 14px 11px; font-size: 9px; }
+  .randomize-all { min-height: 44px; margin-top: 14px; padding: 0 12px; }
+  .randomize-all span { font-size: 9px; }
+  .randomize-all small { font-size: 7px; }
   .tone-controls { padding: 17px 14px 18px; }
   .tone-mode-row { gap: 7px; }
   .tone-mode { min-width: 0; height: 40px; padding: 0 11px; font-size: 8px; }

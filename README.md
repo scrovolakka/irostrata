@@ -17,6 +17,8 @@
   - 紙色だけでなく、粒子、繊維、インク受容ムラをレンダーへ反映
 - 組み込みの印刷レシピ8種と、ブラウザ内へ保存できる名前付きプリセット
 - フレーム比率、CROP / FIT、プレビュー倍率（FIT / 100% / 200% / 300%）
+- 押している間だけ、現在のフレーム比率・クロップ位置のまま元画像へ切り替える比較表示
+- インク数・色、紙、SCREEN / GRAIN、印刷パラメーターをまとめて生成するランダム設定
 - PNG / JPGの完成画像、または各インク版の分版PNGを書き出し
 - Original / Tone / Gamut / Coverage / Master / Printed / Registered / Composite の中間工程表示
 - 連続階調版、網点マスター、印刷シミュレーション版のZIP一括書き出し
@@ -61,6 +63,14 @@ npm run lint
 npm run build
 ```
 
+## GitHub Pages
+
+`main`へプッシュするとGitHub Actionsが静的版をビルドし、GitHub Pagesへ公開します。
+
+- 公開URL: `https://scrovolakka.github.io/inkloom/`
+- Pages用のローカルビルド: `npm run build:pages`
+- 出力先: `dist/client/`
+
 ## 処理の流れ
 
 ```text
@@ -82,7 +92,8 @@ input image
 
 ## 主な構成
 
-- `app/page.tsx` — 編集UI、画像入力、プリセット、エクスポート
+- `app/page.tsx` — 静的ルート
+- `app/studio.tsx` — 編集UI、画像入力、プリセット、エクスポート
 - `app/engine.ts` — 色分解、網点化、紙・印刷・合成処理
 - `app/export.worker.ts` — 高解像度のタイルレンダーと進捗通知
 - `app/export-utils.ts` — ZIP生成とPNG/JPEGの300 DPIメタデータ

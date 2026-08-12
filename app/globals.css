@@ -46,6 +46,11 @@ h1 em { color: #7d7b75; font-style: normal; font-weight: 400; }
 .file-type { position: absolute; top: 9px; right: 9px; color: #66655f; font-family: "DM Mono", monospace; font-size: 7px; letter-spacing: .03em; }
 .source-name { margin: 8px 0 18px; color: #777670; font-family: "DM Mono", monospace; font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .source-name span { color: var(--pink); }
+.source-video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.video-transport { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: -8px 0 18px; padding: 8px; border: 1px solid #343434; background: #131313; }
+.video-transport button { height: 25px; padding: 0 8px; border: 1px solid #494741; color: #ebe7de; background: #242321; font-family: "DM Mono", monospace; font-size: 7px; }
+.video-transport input { min-width: 0; }
+.video-transport output { color: #8d8a82; font-family: "DM Mono", monospace; font-size: 7px; white-space: nowrap; }
 .control-section { margin-top: 15px; padding-top: 13px; border-top: 1px solid var(--line-soft); }
 .section-label { display: flex; justify-content: space-between; color: #aaa79f; }
 .section-label small { color: #66655f; font-size: 8px; }
@@ -151,6 +156,7 @@ h1 em { color: #7d7b75; font-style: normal; font-weight: 400; }
 .export-options { display: grid; gap: 12px; }
 .export-options label { display: grid; gap: 5px; color: #aaa79f; font-family: "DM Mono", monospace; font-size: 8px; }
 .export-options select { height: 31px; padding: 0 8px; border: 1px solid #44423e; color: #e6e0d7; background: #262522; }
+.video-export-estimate { margin: 0; padding: 9px; border: 1px solid #35332f; background: #131313; font-family: "DM Mono", monospace; }
 .export-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 18px; }
 .export-actions button { height: 29px; padding: 0 10px; border: 1px solid #4a4741; color: #d9d3c8; background: #282724; font-family: "DM Mono", monospace; font-size: 8px; }
 .export-actions button.primary { color: #171717; border-color: var(--pink); background: var(--pink); }
@@ -303,6 +309,9 @@ footer { display: none; }
     border-left: 0;
   }
   .upload-zone { min-height: 68px; }
+  .video-transport { grid-template-columns: 64px minmax(0, 1fr); margin-bottom: 21px; padding: 10px; }
+  .video-transport button { height: 40px; }
+  .video-transport output { grid-column: 1 / -1; text-align: right; }
   .ink-editor { margin-right: -14px; margin-left: -14px; }
   .ink-editor > .section-label { padding-right: 14px; padding-left: 14px; }
   .ink-tabs { min-height: 44px; padding-left: 6px; scroll-snap-type: x proximity; }

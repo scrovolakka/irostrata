@@ -7,6 +7,7 @@ import { normalizePresetState } from "../lib/preset-state.mjs";
 import { createRandomRecipe } from "../lib/random-recipe";
 import { createZip, setJpegDpi, setPngDpi } from "./export-utils";
 import { htmlLang, initialLocale, localeOptions, localeStorageKey, translate, type Locale, type MessageKey } from "./i18n";
+import ExportWorker from "./export.worker?worker";
 
 type InkId = "black" | "blue" | "fluorescentPink" | "green" | "orange" | "red" | "brightRed" | "yellow" | "burgundy" | "teal" | "purple" | "brown" | "slate" | "mediumBlue" | "violet" | "cornflower" | "sunflower";
 
@@ -769,15 +770,16 @@ export default function Home() {
       const stages = mode === "separations"
         ? enginePlates.map((_plate, plateIndex) => ({ stage: separationStage as RenderStage, plateIndex, key: `plate-${plateIndex}` }))
         : [{ stage: "composite" as RenderStage, plateIndex: 0, key: "composite" }];
-    const worker = new Worker(new URL("./export.worker.ts", import.meta.url), { type: "module" });
+      const worker = new ExportWorker();
       exportWorkerRef.current = worker;
       const outputs = await new Promise<Record<string, { data: Uint8ClampedArray; channels: number }>>((resolve, reject) => {
         worker.onmessage = (event) => {
           if (event.data.type === "progress") setExportProgress(event.data.progress);
           if (event.data.type === "done") resolve(event.data.outputs);
           if (event.data.type === "cancelled") reject(new DOMException("Cancelled", "AbortError"));
+          if (event.data.type === "error") reject(new Error(`Export worker: ${event.data.message}`));
         };
-        worker.onerror = () => reject(new Error("worker"));
+        worker.onerror = (event) => reject(new Error(`Export worker failed to load: ${event.message || "unknown error"}`));
         worker.postMessage({
           type: "render",
           width: dimensions.width,
@@ -815,6 +817,7 @@ export default function Home() {
       }
       setExportDialogOpen(false);
     } catch (error) {
+      console.error("[IROSTRATA export]", error);
       notify(error instanceof DOMException && error.name === "AbortError" ? "notice.exportCancelled" : "notice.exportFailed");
     } finally {
       exportWorkerRef.current?.terminate();
